@@ -444,13 +444,17 @@ async function handleTranslate(req, res, llm) {
       '宿主没有提供 llm 服务，翻译不可用（查词不受影响）', false)
   }
 
-  // 用宿主当前选定的模型。resolveModelInfo 不可用时退到 deepseek 默认。
-  let provider = 'deepseek'
-  let model = 'deepseek-chat'
-  try {
-    const info = await resolveDefaultTarget(llm)
-    if (info) { provider = info.provider; model = info.model }
-  } catch { /* 用兜底值 */ }
+  // 依次尝试宿主注册的每个 provider 及其模型，第一个能出结果的就用。
+  //
+  // 为什么不能写死一个：宿主的 provider 由用户装的通道决定（raccoon / buddy /
+  // codearts…），写死 'deepseek' 会拿一个无效 key 去请求，报
+  // 「api key: ****c80e is invalid」。也不能只取第一个 —— 第一个往往不是
+  // 当前在用的那个通道。
+  const targets = await listTranslateTargets(llm)
+  if (targets.length === 0) {
+    return sendError(res, 503, 'E_NO_MODEL',
+      '宿主没有可用的模型通道，无法翻译（查词不受影响）', false)
+  }
 
   const prompt = [
     '把下面的英文翻译成简体中文。',
@@ -461,24 +465,37 @@ async function handleTranslate(req, res, llm) {
   ].join('\n')
 
   let translated = ''
-  try {
-    for await (const chunk of llm.stream({
-      provider,
-      model,
-      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
-      temperature: 0,
-      maxTokens: 1024,
-    })) {
-      if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
-        translated += chunk.text
+  const failures = []
+  for (const target of targets) {
+    let acc = ''
+    try {
+      for await (const chunk of llm.stream({
+        provider: target.provider,
+        model: target.model,
+        messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+        temperature: 0,
+        maxTokens: 1024,
+      })) {
+        if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
+          acc += chunk.text
+        }
+        if (chunk?.type === 'finish' && chunk.reason?.kind === 'error') {
+          throw new Error(chunk.reason.failure?.message ?? '模型返回错误')
+        }
       }
-      if (chunk?.type === 'finish' && chunk.reason?.kind === 'error') {
-        throw new Error(chunk.reason.failure?.message ?? '模型返回错误')
+      if (acc.trim() !== '') {
+        translated = acc
+        break
       }
+      failures.push(`${target.provider}/${target.model}：没有输出`)
+    } catch (error) {
+      failures.push(`${target.provider}/${target.model}：${error?.message ?? error}`)
     }
-  } catch (error) {
+  }
+
+  if (translated.trim() === '') {
     return sendError(res, 502, 'E_TRANSLATE_FAILED',
-      `翻译失败：${error?.message ?? error}`, false)
+      `翻译失败。试过的通道：${failures.slice(0, 3).join('；')}`, false)
   }
 
   const clean = translated.trim()
@@ -493,22 +510,36 @@ async function handleTranslate(req, res, llm) {
  *
  * 优先用宿主已注册的 provider 列表里的第一个，拿不到就用 deepseek 兜底。
  */
-async function resolveDefaultTarget(llm) {
+/**
+ * 列出所有可尝试的 provider + model 组合。
+ *
+ * 顺序就是让列表顺序，不做挑选 —— 翻译这种短任务谁先出结果用谁，
+ * 挑错反而会拿到一个没配好 key 的通道。
+ *
+ * @param {object} llm
+ * @returns {Promise<Array<{ provider: string, model: string }>>}
+ */
+async function listTranslateTargets(llm) {
+  const out = []
   try {
     const providers = typeof llm.listProviders === 'function' ? llm.listProviders() : []
-    if (Array.isArray(providers) && providers.length > 0) {
-      const first = providers[0]
-      const id = first?.id ?? first?.provider
-      if (typeof id === 'string' && id !== '') {
-        const models = await llm.listModels(id)
-        if (Array.isArray(models) && models.length > 0 && typeof models[0]?.id === 'string') {
-          return { provider: id, model: models[0].id }
+    for (const item of Array.isArray(providers) ? providers : []) {
+      const id = item?.id ?? item?.provider
+      if (typeof id !== 'string' || id === '') continue
+      let models = []
+      try {
+        models = await llm.listModels(id)
+      } catch { models = [] }
+      if (Array.isArray(models)) {
+        for (const model of models) {
+          if (typeof model?.id === 'string' && model.id !== '') {
+            out.push({ provider: id, model: model.id })
+          }
         }
-        return { provider: id, model: 'deepseek-chat' }
       }
     }
-  } catch { /* 落到兜底 */ }
-  return null
+  } catch { /* 拿不到就返回空，上层给明确提示 */ }
+  return out
 }
 
 /** 读请求体 JSON。体积上限 256 KB。 */

@@ -307,6 +307,51 @@ try {
   try { rmSync(samplePackPath) } catch { /* ignore */ }
 }
 
+// 多通道降级：第一个通道报错，第二个能出结果
+const failingLlm = {
+  listProviders: () => [{ id: 'bad' }, { id: 'good' }],
+  listModels: async (id) => (id === 'bad' ? [{ id: 'bad-model' }] : [{ id: 'good-model' }]),
+  async *stream(options) {
+    if (options.provider === 'bad') {
+      throw new Error('Authentication Fails, Your api key: ****c80e is invalid')
+    }
+    yield { type: 'text-delta', index: 0, text: '译文' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  },
+}
+const failoverServer = await serve({ llm: failingLlm })
+try {
+  const res = await fetch(`${failoverServer.origin}/translate`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: 'hello world' }),
+  })
+  const body = await res.json()
+  record('坏通道失败后自动换下一个', res.status === 200 && body?.text === '译文',
+    `status=${res.status} text=${body?.text}`)
+} finally {
+  await failoverServer.close()
+}
+
+// 全部失败时要把试过哪些通道说出来
+const allBadLlm = {
+  listProviders: () => [{ id: 'x' }],
+  listModels: async () => [{ id: 'xm' }],
+  async *stream() { throw new Error('boom') },
+}
+const allBadServer = await serve({ llm: allBadLlm })
+try {
+  const res = await fetch(`${allBadServer.origin}/translate`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: 'hello world' }),
+  })
+  const body = await res.json()
+  record('全部失败 → 502 且说明原因',
+    res.status === 502 && String(body?.error?.message ?? '').includes('boom'),
+    body?.error?.message)
+} finally {
+  await allBadServer.close()
+}
+
 console.log('\n[7] 词库缺失与禁用')
 
   const backup = join(tmpdir(), `dsh-hover-dict-data-${process.pid}`)
