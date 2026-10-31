@@ -110,10 +110,18 @@ function scanPacks(dataDir) {
     return out
   }
   for (const name of entries) {
-    // 只认 .dat，且名字必须是纯字母数字与连字符，挡掉 ../ 与奇怪字符
-    if (!name.endsWith('.dat')) continue
-    if (!/^[a-z0-9][a-z0-9-]*\.dat$/.test(name)) continue
-    out.set(name, { file: `packs/${name}`, contentType: 'application/json; charset=utf-8', gzip: true })
+    // 只认 .dat（JSON）与 .csv（ECDICT 格式）。
+    // 名字必须是纯字母数字与连字符，挡掉 ../ 与奇怪字符。
+    const isDat = /^[a-z0-9][a-z0-9-]*\.dat$/.test(name)
+    const isCsv = /^[a-z0-9][a-z0-9-]*\.csv$/.test(name)
+    if (!isDat && !isCsv) continue
+    // CSV 要现转 JSON，走单独的处理器，所以这里标记出来
+    out.set(name, {
+      file: `packs/${name}`,
+      contentType: isDat ? 'application/json; charset=utf-8' : 'application/json; charset=utf-8',
+      gzip: true,
+      csv: isCsv,
+    })
   }
   return out
 }
@@ -352,7 +360,10 @@ export function createHandler(options) {
       const asset = whitelist.get(tail)
       let body
       try {
-        body = readFileSync(resolved.path)
+        // CSV 词库现转成 JSON。转换结果按 mtime 缓存，不要每次请求都转。
+        body = asset?.csv
+          ? csvPackToJson(resolved.path, resolved.mtimeMs)
+          : readFileSync(resolved.path)
       } catch (error) {
         logger.warn?.(`[dsh-hover-dict] 读取 ${tail} 失败：${error?.message ?? error}`)
         return sendError(res, 503, 'E_DICT_MISSING', '词库读取失败，请重新构建数据', method === 'HEAD')
@@ -517,6 +528,105 @@ function readJsonBody(req) {
     })
     req.on('error', () => done(null))
   })
+}
+
+/**
+ * 把 ECDICT 格式的 CSV 转成与 dict.dat 同构的 JSON。
+ *
+ * 只取四个字段：word / translation / definition / tag。
+ * 其他字段（音标、audio、detail）本插件不用，转过来只是浪费体积。
+ *
+ * 结果按文件 mtime 缓存：一个几万行的 CSV 转一次要几百毫秒，
+ * 每次请求都转是不可接受的。
+ *
+ * @type {Map<string, { mtimeMs: number, body: Buffer }>}
+ */
+const CSV_CACHE = new Map()
+
+function csvPackToJson(path, mtimeMs) {
+  const hit = CSV_CACHE.get(path)
+  if (hit !== undefined && hit.mtimeMs === mtimeMs) return hit.body
+
+  const text = readFileSync(path, 'utf8')
+  const rows = parseCsvRows(text)
+  if (rows.length === 0) return Buffer.from('{}')
+
+  const header = rows[0].map((name) => name.trim())
+  const at = (name) => header.indexOf(name)
+  const iWord = at('word')
+  const iTrans = at('translation')
+  const iDef = at('definition')
+  const iTag = at('tag')
+  if (iWord < 0 || iTrans < 0) {
+    throw new Error('CSV 缺少 word 或 translation 列')
+  }
+
+  const out = Object.create(null)
+  for (let i = 1; i < rows.length; i += 1) {
+    const row = rows[i]
+    const word = String(row[iWord] ?? '').trim().toLowerCase()
+    if (word === '' || /\s/.test(word)) continue
+    if (!/^[a-z][a-z'-]*$/.test(word)) continue
+    const translation = String(row[iTrans] ?? '').trim()
+    if (translation === '') continue
+
+    // 义项按换行拆，每行形如 `n. 算法`
+    const senses = []
+    for (const line of translation.split(/\\n|\n/)) {
+      const trimmed = line.trim()
+      if (trimmed === '') continue
+      const hit2 = /^([A-Za-z]{1,8})\.\s*(.*)$/.exec(trimmed)
+      const pos = hit2 ? `${hit2[1]}.` : ''
+      const zh = (hit2 ? hit2[2] : trimmed)
+        .split(/[,，;；]/)
+        .map((x) => x.trim())
+        .filter(Boolean)
+      if (zh.length === 0) continue
+      senses.push(pos === '' ? [pos, zh] : [pos, zh])
+    }
+    if (senses.length === 0) continue
+
+    const tags = iTag >= 0 ? String(row[iTag] ?? '').trim() : ''
+    const def = iDef >= 0 ? String(row[iDef] ?? '').trim() : ''
+    const entry = [senses, tags === '' ? null : tags.replace(/\s+/g, ' '), 0, 0, 0]
+    if (def !== '') entry.push([[null, def]])
+    out[word] = entry
+  }
+
+  const body = Buffer.from(JSON.stringify(out))
+  CSV_CACHE.set(path, { mtimeMs, body })
+  // 只留最近两份，数据目录换了才会累积
+  if (CSV_CACHE.size > 4) {
+    const oldest = [...CSV_CACHE.keys()].slice(0, CSV_CACHE.size - 4)
+    for (const key of oldest) CSV_CACHE.delete(key)
+  }
+  return body
+}
+
+/** 极简 CSV 解析：支持引号包裹与双引号转义。 */
+function parseCsvRows(text) {
+  const rows = []
+  let row = []
+  let field = ''
+  let quoted = false
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i]
+    if (quoted) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 1 } else { quoted = false }
+      } else {
+        field += ch
+      }
+      continue
+    }
+    if (ch === '"' && field === '') { quoted = true; continue }
+    if (ch === ',') { row.push(field); field = ''; continue }
+    if (ch === '\r') continue
+    if (ch === '\n') { row.push(field); rows.push(row); row = []; field = ''; continue }
+    field += ch
+  }
+  if (field !== '' || row.length > 0) { row.push(field); rows.push(row) }
+  return rows
 }
 
 /** 读 meta.json 里的词条数，用于 health。读不到就返回 undefined，不要抛。 */

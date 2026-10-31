@@ -340,7 +340,11 @@ t('有立体感按钮样式', src.includes('border-bottom-width: 2px') && src.in
 t('有词库包清单', src.includes('WORD_PACKS'))
 t('系统自带三个包', (src.match(/builtin: true/g) ?? []).length === 3,
   String((src.match(/builtin: true/g) ?? []).length))
-t('可下载包含商务英语与 IT', src.includes("name: '商务英语'") && src.includes("name: 'IT 与新技术词'"))
+// 只列系统自带的三个；且组件里不再渲染「下载/停用」按钮
+t('只列系统自带的三个包', (src.match(/builtin: true/g) ?? []).length === 3,
+  String((src.match(/builtin: true/g) ?? []).length))
+t('不再渲染下载按钮', !src.includes("'下载'") && !src.includes("'停用'"))
+t('给了自定义词库的放法', src.includes('data/packs/'))
 t('有自定义开关控件', src.includes('hds-switch'))
 
 console.log(`\n================ ${pass}/${pass + fail} 通过 ================`)

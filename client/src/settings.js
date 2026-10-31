@@ -540,42 +540,35 @@ export function SettingsPanel(props) {
 
     /* 词库管理 */
     section('packs', '词库与句子库',
-      `系统自带三个：核心词库 ${dictInfo?.entries ? `${dictInfo.entries.toLocaleString()} 词` : ''}、词根库、双语例句库。其余按需下载，装了才会参与查词。`,
+      '系统自带三个，随插件分发，完全离线。其余词库可以用下面的方式自己加。',
       [
         h('div', { key: 'cards', className: 'hds-cards' },
-          WORD_PACKS.map((pack) => {
-            const installed = pack.builtin || Boolean(packs[pack.id])
-            const loading = busy === pack.id
-            return h('div', {
-              key: pack.id,
-              className: 'hds-card',
-              'data-installed': installed ? '' : undefined,
-            }, [
-              h('div', { key: 'm', className: 'hds-card-main' }, [
-                h('div', { key: 'n', className: 'hds-card-name' }, [
-                  h('span', { key: 't' }, pack.name),
-                  pack.builtin
-                    ? h('span', { key: 'b', className: 'hds-badge hds-badge-builtin' }, '系统自带')
-                    : installed
-                      ? h('span', { key: 'b', className: 'hds-badge hds-badge-on' }, '已启用')
-                      : null,
-                ]),
-                h('div', { key: 'd', className: 'hds-card-meta' }, pack.desc),
+          WORD_PACKS.map((pack) => h('div', {
+            key: pack.id,
+            className: 'hds-card',
+            'data-installed': '',
+          }, [
+            h('div', { key: 'm', className: 'hds-card-main' }, [
+              h('div', { key: 'n', className: 'hds-card-name' }, [
+                h('span', { key: 't' }, pack.name),
+                h('span', { key: 'b', className: 'hds-badge hds-badge-builtin' }, '系统自带'),
               ]),
-              pack.builtin
-                ? null
-                : h('button', {
-                  key: 'btn',
-                  className: `hds-btn hds-btn-sm${installed ? '' : ' hds-btn-primary'}`,
-                  type: 'button',
-                  disabled: loading,
-                  onClick: () => onTogglePack(pack),
-                }, loading ? '处理中…' : installed ? '停用' : '下载'),
-            ])
-          }),
+              h('div', { key: 'd', className: 'hds-card-meta' }, pack.desc),
+            ]),
+          ])),
         ),
+        h('div', { key: 'custom', className: 'hds-stack' }, [
+          h('div', { key: 't', className: 'hds-title', style: { fontSize: '14px' } }, '自己加词库'),
+          h('div', { key: 'h', className: 'hds-hint' },
+            '把词库文件放进插件的 data/packs/ 目录，重启 DSH 后会自动加载。'
+            + '支持两种格式：ECDICT 的 CSV，或者与 dict.dat 同构的 JSON。'),
+          h('div', { key: 'path', className: 'hds-hint', style: { fontFamily: 'var(--ds-font-family-code, monospace)' } },
+            '../dsh-hover-dict/data/packs/'),
+        ]),
         h('div', { key: 'note', className: 'hds-note hds-note-info' },
-          '自定义词库：把 ECDICT 格式的 CSV 放到插件的 data/packs/ 目录，重启后在设置里就会出现。'),
+          `当前词库共 ${dictInfo?.entries ? dictInfo.entries.toLocaleString() : '20,499'} 个词条，`
+          + `${dictInfo?.examples ? dictInfo.examples.toLocaleString() : '8,960'} 个带双语例句，`
+          + `${dictInfo?.roots ? dictInfo.roots.toLocaleString() : '6,374'} 个带词根分析。`),
       ]),
 
     /* 生词本 */
@@ -675,18 +668,9 @@ export function SettingsPanel(props) {
  * 其余按需下载——装了就参与查词，没装就查不到那部分词。
  */
 export const WORD_PACKS = [
-  { id: 'core', name: '核心词库', builtin: true, desc: '20,499 个考纲核心词：中考 / 高考 / 四六级 / 考研 / 托福 / 雅思 / GRE。' },
-  { id: 'roots', name: '词根词缀库', builtin: true, desc: '6,374 个词的词根词缀拆解，来自 ECDICT 词根库。' },
-  { id: 'examples', name: '双语例句库', builtin: true, desc: '8,960 个词的中英对照例句，来自 Tatoeba，CC BY 2.0 FR。' },
-  { id: 'cet', name: '四六级专项', desc: '教育部四六级大纲词汇，按考纲顺序补充超纲词与近义词辨析。' },
-  { id: 'kaoyan', name: '考研英语专项', desc: '考研英语一 / 二大纲词汇，含真题高频词与长难句例句。' },
-  { id: 'ielts', name: '雅思专项', desc: 'IELTS 学术类与培训类高频词，含听力场景词与写作替换词。' },
-  { id: 'toefl', name: '托福专项', desc: 'TOEFL 学科词汇：生物、地质、天文、艺术史等讲座高频词。' },
-  { id: 'collins', name: '柯林斯星级词', desc: '柯林斯词典 1–5 星词汇，按使用频率分级，适合按频率背诵。' },
-  { id: 'business', name: '商务英语', desc: 'BEC 与外贸函电常用词：谈判、合同、物流、财务、邮件套语。' },
-  { id: 'it', name: 'IT 与新技术词', desc: 'AI、云计算、前端框架、开源生态里的新词与缩写，词典里通常查不到。' },
-  { id: 'daily', name: '日常口语', desc: '口语高频短语与俚语，含常见搭配与场景例句。' },
-  { id: 'wordnet', name: 'WordNet 同义网络', desc: '英文释义与同反义词网络，用于补充词义细节，CC BY 4.0。' },
+  { id: 'core', name: '核心词库', builtin: true, desc: '20,499 个考纲核心词：中考 / 高考 / 四六级 / 考研 / 托福 / 雅思 / GRE，每个词带词性、中文释义、英文释义与变音标注。' },
+  { id: 'roots', name: '词根词缀库', builtin: true, desc: '6,374 个词的词根词缀拆解，来自 ECDICT 词根库（MIT）。' },
+  { id: 'examples', name: '双语例句库', builtin: true, desc: '8,960 个词的中英对照例句，来自 Tatoeba（CC BY 2.0 FR）。' },
 ]
 
 /** 读已启用的词库包。 */

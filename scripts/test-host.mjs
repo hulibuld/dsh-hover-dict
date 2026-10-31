@@ -287,6 +287,20 @@ try {
 
   const notPack = await fetch(`${packServer.origin}/nonexistent.dat`)
   record('不存在的包 → 404', notPack.status === 404, `status=${notPack.status}`)
+
+  // CSV 词库：放进去就能用，不需要预处理
+  const csvPath = join(packsDir, 'testcsv.csv')
+  writeFileSync(csvPath, 'word,translation,definition,tag\nserendipity,"n. 意外发现, 侥幸","luck",cet6\n')
+  try {
+    const csvRes = await fetch(`${packServer.origin}/testcsv.csv`)
+    const csvBody = await csvRes.json().catch(() => null)
+    record('CSV 词库能读', csvRes.status === 200, `status=${csvRes.status}`)
+    record('CSV 转成词条结构',
+      csvBody?.serendipity?.[0]?.[0]?.[1]?.includes('意外发现'), JSON.stringify(csvBody?.serendipity)?.slice(0, 60))
+    record('CSV 标签保留', csvBody?.serendipity?.[1] === 'cet6', csvBody?.serendipity?.[1])
+  } finally {
+    try { rmSync(csvPath) } catch { /* ignore */ }
+  }
 } finally {
   await packServer.close()
   // 清理：删掉测试包，别把痕迹留进仓库

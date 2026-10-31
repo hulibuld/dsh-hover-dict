@@ -70,7 +70,7 @@ rewrite     re-[前缀] 再
 
 ## 词库与句子库
 
-系统自带三个，随包分发，不需要联网：
+系统自带三个，随包分发，完全离线：
 
 | 包 | 内容 |
 |---|---|
@@ -78,11 +78,22 @@ rewrite     re-[前缀] 再
 | 词根词缀库 | 6,374 个词的拆解 |
 | 双语例句库 | 8,960 个词的中英对照例句 |
 
-其余按需下载：四六级专项、考研专项、雅思专项、托福专项、柯林斯星级词、商务英语、
-IT 与新技术词、日常口语、WordNet 同义网络。装了才参与查词。
+### 自己加词库
 
-**自定义词库**：把与 `data/dict.dat` 同构的 JSON 放进 `data/packs/<名字>.dat`，
-重启后在设置页就会出现。文件名只能是 `小写字母/数字/连字符` 加 `.dat`。
+把文件放进 `data/packs/`，重启 DSH 后自动加载。支持两种格式：
+
+**ECDICT 的 CSV** —— 只要有 `word` 与 `translation` 两列就能用，`definition` 与 `tag` 可选：
+
+```csv
+word,translation,definition,tag
+serendipity,"n. 意外发现, 侥幸",luck,cet6
+blockchain,n. 区块链,a distributed ledger,
+```
+
+**与 `dict.dat` 同构的 JSON** —— 键是词头，值是槽位数组。格式见 `docs/架构.md` 的数据契约。
+
+文件名只能是 `小写字母/数字/连字符` 加 `.dat` 或 `.csv`。这是在防路径穿越：宿主不接受任意路径，
+只认 `data/packs/` 下扫描到的文件。
 
 ## 重新生成词库
 
