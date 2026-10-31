@@ -343,6 +343,8 @@ export function createHandler(options) {
           enabled,
           entries: meta?.entries ?? 0,
           examples: meta?.examples ?? 0,
+          // 前端要显示「把文件放这里」，只有宿主知道真实路径
+          packsDir: join(dataDir, 'packs'),
         }, method === 'HEAD')
       }
 

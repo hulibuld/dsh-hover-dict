@@ -2876,298 +2876,332 @@ window.__ModuleLoader__.load({
 
 /** 设置面板的样式。 */
     const CSS = `
-/* ── 版式基准 ────────────────────────────────────────────────
-   设置页要“大气”，靠的是三件事：字号、行高、留白。
-   原来 13px / gap 8px / line-height 1.5 挤在一起，读起来累。
-   现在正文 14px、行高 1.7、区块间距 28px、控件高 34px。 */
+/* ═══════════════════════════════════════════════════════════════════════
+   英语翻译设置 · 视觉系统
+   参照 dsh-get-it-for-free 的 ofm 设计语言：
+   分层用 --dsw-alias-bg-layer-1/2/3，按钮用细边 + 内高光 + 悬停扫光，
+   卡片带拉丝细纹底与外投影。昼夜由宿主切换，这里不写死颜色。
+   ═══════════════════════════════════════════════════════════════════════ */
 
     .hds-root {
+      --ease-instrument: cubic-bezier(.16,1,.3,1);
+      --ease-settle: cubic-bezier(.34,1.4,.4,1);
       display: flex;
       flex-direction: column;
-      gap: 32px;
-      padding: 8px 0 24px;
-      font-size: 14px;
-      line-height: 1.7;
-      color: var(--dsw-alias-label-primary, inherit);
-      max-width: 760px;
+      gap: 30px;
+      max-width: 860px;
+      padding: 4px 0 28px;
+      font-size: 13.5px;
+      line-height: 1.78;
+      color: var(--dsw-alias-label-primary);
+      -webkit-font-smoothing: antialiased;
     }
+    .hds-root * { box-sizing: border-box; }
 
-    .hds-section {
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
+/* ── 区块 ────────────────────────────────────────────────────────────── */
+    .hds-section { display: flex; flex-direction: column; gap: 18px; }
 
     .hds-head {
       display: flex;
-      flex-direction: column;
-      gap: 6px;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 10px;
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.16));
     }
 
     .hds-title {
-      font-weight: 600;
-      font-size: 15px;
+      font-size: 14px;
+      font-weight: 680;
+      letter-spacing: -.2px;
       line-height: 1.5;
-      letter-spacing: .01em;
-      color: var(--dsw-alias-label-primary, inherit);
     }
 
     .hds-hint {
-      color: var(--dsw-alias-label-tertiary, #8a8a8a);
-      font-size: 13px;
-      line-height: 1.75;
+      font-size: 12px;
+      line-height: 1.85;
+      color: var(--dsw-alias-label-tertiary);
     }
 
-/* 一行设置：左边标签固定宽，右边控件 —— 让所有控件左边缘对齐 */
+    .hds-stack { display: flex; flex-direction: column; gap: 14px; }
+    .hds-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+/* 一行设置：标签在上、控件在下，留足垂直空间 */
     .hds-field {
-      display: grid;
-      grid-template-columns: 132px minmax(0, 1fr);
-      align-items: center;
-      gap: 16px;
-      min-height: 36px;
-    }
-
-    .hds-label {
-      color: var(--dsw-alias-label-secondary, #6b6b6b);
-      font-size: 14px;
-      line-height: 1.6;
-    }
-
-    .hds-row {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-
-    .hds-stack {
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 8px;
+      padding: 4px 0;
+    }
+    .hds-field > .hds-label {
+      font-size: 12.5px;
+      line-height: 1.7;
+      color: var(--dsw-alias-label-secondary);
     }
 
-/* ── 按钮：立体感 + 按下回弹 ────────────────────────────────
-   立体感不靠渐变，靠三样东西：
-   1. 底部一条 2px 深色边（让按钮看起来是“浮”起一块）
-   2. 一层极淡的上高光
-   3. 轻微的投影
-   按下时：下边框缩到 1px、整体下沉 1px、投影收紧 —— 手感像真的按进去。 */
-
+/* ── 按钮 ────────────────────────────────────────────────────────────── */
     .hds-btn {
-      --btn-bg: var(--dsw-alias-bg-base, #fff);
-      --btn-border: var(--dsw-alias-border-l2, rgba(0,0,0,.16));
-      --btn-shadow: rgba(0,0,0,.10);
-
       position: relative;
+      overflow: hidden;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 8px;
-      min-height: 36px;
-      padding: 0 18px;
+      gap: 7px;
+      min-height: 32px;
+      padding: 6px 16px;
       border-radius: 9px;
-      border: 1px solid var(--btn-border);
-      border-bottom-width: 2px;
-      background: var(--btn-bg);
-      box-shadow:
-        inset 0 1px 0 rgba(255,255,255,.55),
-        0 2px 5px var(--btn-shadow);
-      color: var(--dsw-alias-label-primary, inherit);
+      border: 1px solid var(--dsw-alias-border-l2);
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-3) 84%, transparent);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%);
+      color: var(--dsw-alias-label-primary);
       font: inherit;
-      font-size: 14px;
-      font-weight: 500;
-      line-height: 1;
+      font-size: 12.5px;
+      font-weight: 580;
+      line-height: 1.4;
       cursor: pointer;
       white-space: nowrap;
       transition:
-        transform .09s cubic-bezier(.34,1.4,.64,1),
-        box-shadow .09s ease,
-        border-bottom-width .09s ease,
-        background-color .12s ease;
+        transform .16s var(--ease-settle),
+        border-color .2s var(--ease-instrument),
+        background .2s var(--ease-instrument),
+        box-shadow .2s var(--ease-instrument),
+        opacity .16s ease;
       -webkit-tap-highlight-color: transparent;
     }
 
+/* 悬停扫光：一条斜向高光从左侧滑过 */
+    .hds-btn::after {
+      content: "";
+      position: absolute;
+      top: 0; bottom: 0;
+      left: -60%;
+      width: 42%;
+      background: linear-gradient(100deg, transparent, rgb(255 255 255 / 14%), transparent);
+      transform: skewX(-18deg);
+      transition: left .5s var(--ease-instrument);
+      pointer-events: none;
+    }
+    .hds-btn:hover:not(:disabled)::after { left: 118%; }
+
     .hds-btn:hover:not(:disabled) {
-      background: var(--dsw-alias-interactive-bg-hover-solid, rgba(127,127,127,.10));
-      box-shadow:
-        inset 0 1px 0 rgba(255,255,255,.6),
-        0 3px 8px rgba(0,0,0,.13);
+      transform: translateY(-1px);
+      border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 62%, var(--dsw-alias-border-l2));
+      background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 7%, var(--dsw-alias-bg-layer-3));
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%);
     }
 
+/* 按下：快速陷落 + 内阴影加深 */
     .hds-btn:active:not(:disabled) {
-      transform: translateY(2px);
-      border-bottom-width: 1px;
-      box-shadow:
-        inset 0 1px 3px rgba(0,0,0,.14),
-        0 0 0 rgba(0,0,0,0);
+      transform: scale(.985);
+      transition-duration: .09s;
+      box-shadow: inset 0 2px 5px rgb(0 0 0 / 14%), inset 0 1px 0 rgb(255 255 255 / 3%);
     }
 
     .hds-btn:focus-visible {
-      outline: 2px solid var(--dsw-alias-state-business-primary, #3b82f6);
+      outline: 2px solid var(--dsw-alias-state-business-primary);
       outline-offset: 2px;
     }
 
-    .hds-btn:disabled {
-      opacity: .42;
-      cursor: default;
-      transform: none;
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.4);
-    }
+    .hds-btn:disabled { opacity: .45; cursor: default; box-shadow: none; transform: none; }
+    .hds-btn:disabled::after { content: none; }
 
-/* 主按钮：实底 */
     .hds-btn-primary {
-      --btn-bg: var(--dsw-alias-state-business-primary, #3b82f6);
-      --btn-border: transparent;
-      --btn-shadow: rgba(59,130,246,.36);
-      color: #fff;
+      background: linear-gradient(180deg,
+        color-mix(in srgb, var(--dsw-alias-state-business-primary) 88%, #fff),
+        var(--dsw-alias-state-business-primary));
+      border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 82%, #000);
+      color: var(--dsw-alias-label-on-accent, #fff);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%),
+                  inset 0 -10px 18px -12px rgb(0 0 0 / 24%);
     }
     .hds-btn-primary:hover:not(:disabled) {
-      background: var(--dsw-alias-state-business-primary, #3b82f6);
-      filter: brightness(1.06);
+      background: linear-gradient(180deg,
+        var(--dsw-alias-state-business-primary),
+        color-mix(in srgb, var(--dsw-alias-state-business-primary) 88%, #000));
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 26%),
+                  inset 0 -10px 18px -12px rgb(0 0 0 / 18%);
     }
 
-/* 危险按钮 */
+    .hds-btn-ghost {
+      background: transparent;
+      border-color: transparent;
+      box-shadow: none;
+      color: var(--dsw-alias-label-secondary);
+    }
+    .hds-btn-ghost:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 80%, transparent);
+      border-color: var(--dsw-alias-border-l1);
+      color: var(--dsw-alias-label-primary);
+    }
+    .hds-btn-ghost::after { content: none; }
+
     .hds-btn-danger {
-      --btn-border: var(--dsw-alias-state-error-primary, #e5484d);
-      color: var(--dsw-alias-state-error-primary, #e5484d);
+      border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 55%, var(--dsw-alias-border-l2));
+      color: var(--dsw-alias-state-error-primary);
     }
     .hds-btn-danger:hover:not(:disabled) {
-      background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 10%, transparent);
+      background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, var(--dsw-alias-bg-layer-3));
+      border-color: var(--dsw-alias-state-error-primary);
     }
 
-/* 小号按钮（词库里“下载/已装”这类） */
-    .hds-btn-sm {
-      min-height: 30px;
-      padding: 0 13px;
-      font-size: 13px;
-      border-radius: 7px;
-      gap: 6px;
-    }
+    .hds-btn-sm { min-height: 28px; padding: 4px 12px; font-size: 11.5px; border-radius: 7px; }
 
-/* ── 输入控件 ────────────────────────────────────────────── */
-
-    .hds-input,
-    .hds-select {
-      min-height: 34px;
-      padding: 0 12px;
-      border-radius: 8px;
-      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.16));
-      background: var(--dsw-alias-bg-base, transparent);
-      color: inherit;
+/* ── 输入 ────────────────────────────────────────────────────────────── */
+    .hds-input, .hds-select {
       font: inherit;
-      font-size: 14px;
-      transition: border-color .12s ease, box-shadow .12s ease;
+      font-size: 13px;
+      padding: 8px 12px;
+      border-radius: 9px;
+      border: 1px solid var(--dsw-alias-border-l2);
+      background: var(--dsw-alias-bg-layer-1);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%),
+                  inset 0 2px 6px -2px rgb(0 0 0 / 10%);
+      color: var(--dsw-alias-label-primary);
+      min-width: 0;
+      transition: border-color .18s var(--ease-instrument), box-shadow .2s var(--ease-instrument);
     }
-
-    .hds-input:focus,
-    .hds-select:focus {
+    .hds-input:hover, .hds-select:hover {
+      border-color: color-mix(in srgb, var(--dsw-alias-border-l2) 55%, var(--dsw-alias-state-business-primary));
+    }
+    .hds-input:focus, .hds-select:focus {
       outline: none;
-      border-color: var(--dsw-alias-state-business-primary, #3b82f6);
-      box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary, #3b82f6) 18%, transparent);
+      border-color: var(--dsw-alias-state-business-primary);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%),
+                  inset 0 2px 6px -2px rgb(0 0 0 / 8%),
+                  0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);
     }
-
-    .hds-input[type="number"] { max-width: 96px; }
+    .hds-input[type="number"] { max-width: 110px; }
 
     .hds-textarea {
       width: 100%;
-      box-sizing: border-box;
-      min-height: 120px;
-      padding: 12px 14px;
-      border-radius: 8px;
-      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.16));
-      background: var(--dsw-alias-bg-base, transparent);
-      color: inherit;
+      min-height: 128px;
       font-family: var(--ds-font-family-code, ui-monospace, monospace);
-      font-size: 13px;
-      line-height: 1.7;
+      font-size: 12.5px;
+      line-height: 1.85;
+      padding: 12px 14px;
+      border-radius: 9px;
+      border: 1px solid var(--dsw-alias-border-l2);
+      background: var(--dsw-alias-bg-layer-1);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%),
+                  inset 0 2px 6px -2px rgb(0 0 0 / 10%);
+      color: var(--dsw-alias-label-primary);
       resize: vertical;
-      transition: border-color .12s ease, box-shadow .12s ease;
+      transition: border-color .18s var(--ease-instrument), box-shadow .2s var(--ease-instrument);
     }
-
     .hds-textarea:focus {
       outline: none;
-      border-color: var(--dsw-alias-state-business-primary, #3b82f6);
-      box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary, #3b82f6) 18%, transparent);
+      border-color: var(--dsw-alias-state-business-primary);
+      box-shadow: inset 0 2px 6px -2px rgb(0 0 0 / 8%),
+                  0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);
     }
 
-/* 开关：不用原生 checkbox，自己画一个 */
+/* ── 开关：spring 滑块 ───────────────────────────────────────────────── */
     .hds-switch {
-      position: relative;
       display: inline-flex;
       align-items: center;
-      width: 46px;
-      height: 26px;
-      border-radius: 13px;
-      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
-      background: var(--dsw-alias-interactive-bg-hover-solid, rgba(127,127,127,.18));
+      gap: 9px;
       cursor: pointer;
-      transition: background-color .16s ease, border-color .16s ease;
+      user-select: none;
+      appearance: none;
+      background: transparent;
+      border: 0;
       padding: 0;
+      font: inherit;
+      color: inherit;
+      -webkit-tap-highlight-color: transparent;
     }
-    .hds-switch[data-on] {
-      background: var(--dsw-alias-state-business-primary, #3b82f6);
-      border-color: transparent;
+
+    .hds-switch-track {
+      width: 38px;
+      height: 21px;
+      border-radius: 999px;
+      background: var(--dsw-alias-bg-layer-1);
+      border: 1px solid var(--dsw-alias-border-l2);
+      box-shadow: inset 0 1px 3px rgb(0 0 0 / 10%), inset 0 -1px 0 rgb(255 255 255 / 4%);
+      position: relative;
+      flex: none;
+      transition: background .22s var(--ease-instrument),
+                  border-color .22s var(--ease-instrument),
+                  box-shadow .22s var(--ease-instrument);
     }
-    .hds-switch::after {
+
+    .hds-switch-track::after {
       content: "";
       position: absolute;
-      left: 3px;
-      width: 20px;
-      height: 20px;
+      top: 2px; left: 2px;
+      width: 15px; height: 15px;
       border-radius: 50%;
-      background: #fff;
-      box-shadow: 0 1px 3px rgba(0,0,0,.28);
-      transition: transform .16s cubic-bezier(.34,1.4,.64,1);
+      background: var(--dsw-alias-label-primary);
+      box-shadow: 0 1px 3px rgb(0 0 0 / 28%), inset 0 1px 0 rgb(255 255 255 / 20%);
+      transition: transform .28s var(--ease-settle),
+                  background .2s var(--ease-instrument),
+                  width .14s var(--ease-instrument);
     }
-    .hds-switch[data-on]::after { transform: translateX(20px); }
 
-/* ── 词库卡片 ────────────────────────────────────────────── */
+    .hds-switch:active .hds-switch-track::after { width: 18px; }
 
-    .hds-cards {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
+    .hds-switch[aria-checked="true"] .hds-switch-track {
+      background: var(--dsw-alias-state-business-primary);
+      border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 85%, #000);
+      box-shadow: inset 0 1px 3px rgb(0 0 0 / 14%), inset 0 -1px 0 rgb(255 255 255 / 8%);
     }
+    .hds-switch[aria-checked="true"] .hds-switch-track::after {
+      transform: translateX(17px);
+      background: var(--dsw-alias-label-on-accent, #fff);
+    }
+    .hds-switch[aria-checked="true"]:active .hds-switch-track::after {
+      transform: translateX(14px);
+    }
+    .hds-switch:focus-visible .hds-switch-track {
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 22%, transparent);
+    }
+
+    .hds-switch-text { font-size: 13px; line-height: 1.7; }
+
+/* ── 卡片 ────────────────────────────────────────────────────────────── */
+    .hds-cards { display: flex; flex-direction: column; gap: 10px; }
 
     .hds-card {
       display: flex;
       align-items: center;
-      gap: 16px;
-      padding: 14px 16px;
-      border-radius: 10px;
-      border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
-      background: var(--dsw-alias-bg-base, transparent);
-      transition: border-color .12s ease, background-color .12s ease;
+      gap: 14px;
+      padding: 13px 15px;
+      border-radius: 13px;
+      border: 1px solid var(--dsw-alias-border-l2);
+  /* 拉丝细纹垫底：从边缘隐约透出，不做成显眼图案 */
+      background:
+        repeating-linear-gradient(115deg, rgb(255 255 255 / 4.5%) 0 1px, transparent 1px 2.5px) padding-box,
+        color-mix(in srgb, var(--dsw-alias-bg-layer-3) 84%, transparent);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%),
+                  inset 0 -12px 24px -16px rgb(0 0 0 / 14%);
+      transition: transform .22s var(--ease-instrument),
+                  box-shadow .26s var(--ease-instrument),
+                  border-color .2s var(--ease-instrument);
     }
 
     .hds-card:hover {
-      border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      transform: translateY(-1px);
+      border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 58%, var(--dsw-alias-border-l2));
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 11%),
+                  inset 0 -12px 24px -16px rgb(0 0 0 / 10%);
     }
 
-    .hds-card[data-installed] {
-      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 40%, transparent);
-    }
-
-    .hds-card-main {
-      flex: 1;
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
+    .hds-card-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
 
     .hds-card-name {
-      font-weight: 600;
-      font-size: 14px;
       display: flex;
       align-items: center;
       gap: 8px;
+      font-size: 13.5px;
+      font-weight: 650;
+      letter-spacing: -.1px;
+      line-height: 1.55;
     }
 
     .hds-card-meta {
-      color: var(--dsw-alias-label-tertiary, #8a8a8a);
-      font-size: 13px;
-      line-height: 1.6;
+      font-size: 12px;
+      line-height: 1.85;
+      color: var(--dsw-alias-label-tertiary);
     }
 
     .hds-badge {
@@ -3175,92 +3209,117 @@ window.__ModuleLoader__.load({
       align-items: center;
       padding: 1px 8px;
       border-radius: 999px;
-      font-size: 11px;
+      font-size: 10.5px;
       font-weight: 500;
       line-height: 1.7;
       border: 1px solid transparent;
-    }
-    .hds-badge-on {
-      color: var(--dsw-alias-state-success-primary, #2f9e44);
-      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 45%, transparent);
+      white-space: nowrap;
     }
     .hds-badge-builtin {
-      color: var(--dsw-alias-label-tertiary, #8a8a8a);
-      border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      color: var(--dsw-alias-label-tertiary);
+      border-color: var(--dsw-alias-border-l2);
+    }
+    .hds-badge-on {
+      color: var(--dsw-alias-state-success-primary);
+      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent);
     }
 
-/* ── 生词本标签 ──────────────────────────────────────────── */
-
+/* ── 生词本 chips ────────────────────────────────────────────────────── */
     .hds-chips {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
-      max-height: 180px;
+      max-height: 190px;
       overflow: auto;
-      padding: 4px 0;
+      padding: 4px 2px 4px 0;
+    }
+    .hds-chips::-webkit-scrollbar { width: 10px; height: 10px; }
+    .hds-chips::-webkit-scrollbar-track { background: transparent; }
+    .hds-chips::-webkit-scrollbar-thumb {
+      background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 32%, transparent);
+      border-radius: 5px;
     }
 
     .hds-chip {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 4px;
       padding: 4px 6px 4px 12px;
       border-radius: 999px;
-      border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.12));
-      font-size: 13px;
-      line-height: 1.6;
-      transition: border-color .12s ease;
+      border: 1px solid var(--dsw-alias-border-l2);
+      background: var(--dsw-alias-bg-layer-1);
+      font-size: 12.5px;
+      line-height: 1.7;
+      transition: border-color .18s var(--ease-instrument), background .18s var(--ease-instrument);
     }
-    .hds-chip:hover { border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.22)); }
+    .hds-chip:hover {
+      border-color: color-mix(in srgb, var(--dsw-alias-border-l2) 55%, var(--dsw-alias-state-business-primary));
+    }
 
     .hds-chip-x {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 18px;
-      height: 18px;
+      width: 19px; height: 19px;
       border: none;
       border-radius: 50%;
       background: none;
-      color: var(--dsw-alias-label-tertiary, #999);
+      color: var(--dsw-alias-label-tertiary);
       cursor: pointer;
       font-size: 14px;
       line-height: 1;
       padding: 0;
-      transition: background-color .12s ease, color .12s ease;
+      transition: background .16s ease, color .16s ease;
     }
     .hds-chip-x:hover {
-      background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 14%, transparent);
-      color: var(--dsw-alias-state-error-primary, #e5484d);
+      background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, transparent);
+      color: var(--dsw-alias-state-error-primary);
     }
 
-/* ── 状态提示 ────────────────────────────────────────────── */
-
+/* ── 提示条 ──────────────────────────────────────────────────────────── */
     .hds-note {
       display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border-radius: 8px;
-      font-size: 13px;
-      line-height: 1.7;
+      gap: 9px;
+      padding: 10px 13px;
+      border-radius: 11px;
+      border: 1px solid;
+      font-size: 12px;
+      line-height: 1.8;
     }
     .hds-note-ok {
-      background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 10%, transparent);
-      color: var(--dsw-alias-state-success-primary, #2f9e44);
+      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent);
+      background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 9%, transparent);
     }
     .hds-note-err {
-      background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 10%, transparent);
-      color: var(--dsw-alias-state-error-primary, #e5484d);
+      border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);
+      background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 9%, transparent);
     }
     .hds-note-info {
-      background: var(--dsw-alias-interactive-bg-hover-solid, rgba(127,127,127,.10));
-      color: var(--dsw-alias-label-secondary, #6b6b6b);
+      border-color: var(--dsw-alias-border-l1);
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 70%, transparent);
+      color: var(--dsw-alias-label-secondary);
     }
 
-    .hds-stat {
-      font-variant-numeric: tabular-nums;
-      font-weight: 600;
+    .hds-stat { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+    .hds-path {
+      font-family: var(--ds-font-family-code, ui-monospace, monospace);
+      font-size: 11.5px;
+      line-height: 1.9;
+      padding: 8px 12px;
+      border-radius: 8px;
+      border: 1px dashed var(--dsw-alias-border-l2);
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 60%, transparent);
+      color: var(--dsw-alias-label-tertiary);
+      user-select: all;
+    }
+
+/* 减弱动效偏好：只留颜色反馈 */
+    @media (prefers-reduced-motion: reduce) {
+      .hds-root .hds-card:hover,
+      .hds-root .hds-btn:hover:not(:disabled),
+      .hds-root .hds-btn:active:not(:disabled) { transform: none; }
+      .hds-root .hds-btn::after { content: none; }
     }
     `
 
@@ -3289,6 +3348,8 @@ window.__ModuleLoader__.load({
 
       const book = props?.wordbook
       const apiPrefix = props?.apiPrefix ?? '/api/dsh-hover-dict'
+  // 词库包目录。宿主侧 dataDir 默认是包内 data/，这里写成用户能直接打开的绝对路径。
+      const packsDir = props?.packsDir ?? '~/.dsh/profiles/desktop/node_modules/dsh-hover-dict/data/packs'
 
   // 首次挂载读词库元信息
       useEffect(() => {
@@ -3418,12 +3479,40 @@ window.__ModuleLoader__.load({
               ])),
             ),
             h('div', { key: 'custom', className: 'hds-stack' }, [
-              h('div', { key: 't', className: 'hds-title', style: { fontSize: '14px' } }, '自己加词库'),
+              h('div', { key: 't', className: 'hds-title', style: { fontSize: '13.5px' } }, '自己加词库'),
               h('div', { key: 'h', className: 'hds-hint' },
-                '把词库文件放进插件的 data/packs/ 目录，重启 DSH 后会自动加载。'
-                + '支持两种格式：ECDICT 的 CSV，或者与 dict.dat 同构的 JSON。'),
-              h('div', { key: 'path', className: 'hds-hint', style: { fontFamily: 'var(--ds-font-family-code, monospace)' } },
-                '../dsh-hover-dict/data/packs/'),
+                '把词库文件放进下面这个目录，重启 DSH 后自动加载。'
+                + '支持 ECDICT 的 CSV（只要有 word 与 translation 两列），'
+                + '或者与 dict.dat 同构的 JSON。'),
+              h('div', { key: 'pathrow', className: 'hds-row' }, [
+                h('code', { key: 'p', className: 'hds-path' }, packsDir),
+                h('button', {
+                  key: 'copy',
+                  className: 'hds-btn hds-btn-sm',
+                  type: 'button',
+                  onClick: (event) => {
+                    const btn = event.currentTarget
+                    const done = () => {
+                      if (btn) btn.textContent = '已复制'
+                      setTimeout(() => { if (btn) btn.textContent = '复制路径' }, 1400)
+                    }
+                    try {
+                      navigator.clipboard?.writeText(packsDir).then(done, () => {})
+                    } catch { /* 剪贴板不可用就静默 */ }
+                  },
+                }, '复制路径'),
+                h('button', {
+                  key: 'open',
+                  className: 'hds-btn hds-btn-sm',
+                  type: 'button',
+                  title: '在文件管理器里打开（若宿主支持）',
+                  onClick: () => {
+                    try {
+                      window.open(`file://${packsDir}`, '_blank')
+                    } catch { /* 被拦截就算了 */ }
+                  },
+                }, '打开文件夹'),
+              ]),
             ]),
             h('div', { key: 'note', className: 'hds-note hds-note-info' },
               `当前词库共 ${dictInfo?.entries ? dictInfo.entries.toLocaleString() : '20,499'} 个词条，`
@@ -3502,14 +3591,21 @@ window.__ModuleLoader__.load({
             value: ux.appearance.cardMaxWidthPx,
             onChange: (event) => patchAppearance('cardMaxWidthPx', Number(event.target.value)),
           })),
-          field('s3', '显示考纲标签', h('button', {
-            className: 'hds-switch',
-            type: 'button',
-            role: 'switch',
-            'aria-checked': ux.appearance.showTags !== false ? 'true' : 'false',
-            'data-on': ux.appearance.showTags !== false ? '' : undefined,
-            onClick: () => patchAppearance('showTags', ux.appearance.showTags === false),
-          })),
+          h('div', { key: 's3', className: 'hds-field' }, [
+            h('span', { key: 'l', className: 'hds-label' }, '显示考纲标签'),
+            h('button', {
+              key: 'sw',
+              className: 'hds-switch',
+              type: 'button',
+              role: 'switch',
+              'aria-checked': ux.appearance.showTags !== false ? 'true' : 'false',
+              onClick: () => patchAppearance('showTags', ux.appearance.showTags === false),
+            }, [
+              h('span', { key: 'track', className: 'hds-switch-track', 'aria-hidden': 'true' }),
+              h('span', { key: 'text', className: 'hds-switch-text' },
+                ux.appearance.showTags !== false ? '显示' : '隐藏'),
+            ]),
+          ]),
         ]),
 
         message !== null
@@ -4274,6 +4370,8 @@ window.__ModuleLoader__.load({
           rootsStatus: 'not-ready',
       /** 额外词库包是否已经合并过（只做一次） */
           packsMerged: false,
+      /** 词库包目录的真实路径，由宿主 health 接口告知 */
+          packsDir: '',
         }
 
         const notify = () => {
@@ -4829,6 +4927,7 @@ window.__ModuleLoader__.load({
             get wordbook() { return runtime.wordbook },
             get dict() { return runtime.dict },
             apiPrefix: '/api/dsh-hover-dict',
+            get packsDir() { return runtime.packsDir },
           })
 
           dispose.push(slots.inject('settings.section', () => slots.register({
@@ -4931,6 +5030,18 @@ window.__ModuleLoader__.load({
           }
         }
         scheduleLoad()
+    // 问一次宿主：词库包目录在哪。拿不到就留空，前端会显示一句提示。
+        try {
+          fetch('/api/dsh-hover-dict/health')
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => {
+              if (data && typeof data.packsDir === 'string' && data.packsDir !== '') {
+                runtime.packsDir = data.packsDir
+                notify()
+              }
+            })
+            .catch(() => { /* 拿不到就算了 */ })
+        } catch { /* ignore */ }
         void ensureRoots()
         void setupWordbook()
 

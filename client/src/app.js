@@ -143,6 +143,8 @@ export function apply(ctx) {
       rootsStatus: 'not-ready',
       /** 额外词库包是否已经合并过（只做一次） */
       packsMerged: false,
+      /** 词库包目录的真实路径，由宿主 health 接口告知 */
+      packsDir: '',
     }
 
     const notify = () => {
@@ -698,6 +700,7 @@ export function apply(ctx) {
         get wordbook() { return runtime.wordbook },
         get dict() { return runtime.dict },
         apiPrefix: '/api/dsh-hover-dict',
+        get packsDir() { return runtime.packsDir },
       })
 
       dispose.push(slots.inject('settings.section', () => slots.register({
@@ -800,6 +803,18 @@ export function apply(ctx) {
       }
     }
     scheduleLoad()
+    // 问一次宿主：词库包目录在哪。拿不到就留空，前端会显示一句提示。
+    try {
+      fetch('/api/dsh-hover-dict/health')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (data && typeof data.packsDir === 'string' && data.packsDir !== '') {
+            runtime.packsDir = data.packsDir
+            notify()
+          }
+        })
+        .catch(() => { /* 拿不到就算了 */ })
+    } catch { /* ignore */ }
     void ensureRoots()
     void setupWordbook()
 

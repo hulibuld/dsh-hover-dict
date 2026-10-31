@@ -336,7 +336,10 @@ t('标题带数量', filledJson.includes('(2)'))
 // 设置标签页（tab 默认是生词本，这里直接渲染 SettingsPanel 部分不方便，
 // 改为验证开关组件与词库卡片存在于源码里）
 const src = readFileSync(join(ROOT, 'client/src/settings.js'), 'utf8')
-t('有立体感按钮样式', src.includes('border-bottom-width: 2px') && src.includes('transform: translateY(2px)'))
+t('按钮有悬停扫光与按压缩放',
+  src.includes('.hds-btn::after') && src.includes('transform: scale(.985)'),
+  '扫光/缩放')
+t('按钮用分层 token 底色', src.includes('--dsw-alias-bg-layer-3'))
 t('有词库包清单', src.includes('WORD_PACKS'))
 t('系统自带三个包', (src.match(/builtin: true/g) ?? []).length === 3,
   String((src.match(/builtin: true/g) ?? []).length))
@@ -344,7 +347,9 @@ t('系统自带三个包', (src.match(/builtin: true/g) ?? []).length === 3,
 t('只列系统自带的三个包', (src.match(/builtin: true/g) ?? []).length === 3,
   String((src.match(/builtin: true/g) ?? []).length))
 t('不再渲染下载按钮', !src.includes("'下载'") && !src.includes("'停用'"))
-t('给了自定义词库的放法', src.includes('data/packs/'))
+t('给了自定义词库的放法', src.includes('packsDir') && src.includes('复制路径'))
+t('开关有 track 与滑块', src.includes('hds-switch-track') && src.includes('aria-checked'))
+t('行高够松', src.includes('line-height: 1.78') || src.includes('line-height: 1.85'))
 t('有自定义开关控件', src.includes('hds-switch'))
 
 console.log(`\n================ ${pass}/${pass + fail} 通过 ================`)
