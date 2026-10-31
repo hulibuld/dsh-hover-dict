@@ -11,7 +11,7 @@
  */
 
 import { createServer } from 'node:http'
-import { mkdtempSync, renameSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -34,7 +34,7 @@ const record = (name, ok, detail) => {
 async function serve(options) {
   const assets = createAssetResolver({ dataDir: DATA_DIR, maxBytesPerFile: 32 * 1024 * 1024 })
   const { llm: injectedLlm, ...rest } = options ?? {}
-  const handler = createHandler({ assets, llm: injectedLlm, config: { enabled: true, ...rest } })
+  const handler = createHandler({ assets, llm: injectedLlm, dataDir: DATA_DIR, config: { enabled: true, ...rest } })
   const server = createServer((req, res) => { void handler(req, res) })
   await new Promise((done) => server.listen(0, '127.0.0.1', done))
   const { port } = server.address()
@@ -262,6 +262,35 @@ try {
   record('无 llm 时查词仍可用', (await fetch(`${noLlmServer.origin}/meta.json`)).status === 200)
 } finally {
   await noLlmServer.close()
+}
+
+console.log('\n[6.8] 额外词库包')
+
+// 测试自己造一个包，不依赖仓库里有没有——跑完删掉
+const packsDir = join(DATA_DIR, 'packs')
+const samplePackPath = join(packsDir, 'testpack.dat')
+mkdirSync(packsDir, { recursive: true })
+writeFileSync(samplePackPath, JSON.stringify({
+  sample: [[['n.', ['测试包词条']]], 'ielts', 1000, 3, 0],
+}))
+
+const packServer = await serve({})
+try {
+  const res = await fetch(`${packServer.origin}/testpack.dat`)
+  const body = await res.json().catch(() => null)
+  record('可下载词库包能被读取', res.status === 200, `status=${res.status}`)
+  record('词库包内容正确', body !== null && typeof body.sample === 'object', JSON.stringify(body)?.slice(0, 60))
+
+  // 路径穿越：即便 packs 目录里真有文件，也不能用 ../ 摸出去
+  const evil = await fetch(`${packServer.origin}/../dict.dat`)
+  record('词库包路径穿越被拒', evil.status === 404, `status=${evil.status}`)
+
+  const notPack = await fetch(`${packServer.origin}/nonexistent.dat`)
+  record('不存在的包 → 404', notPack.status === 404, `status=${notPack.status}`)
+} finally {
+  await packServer.close()
+  // 清理：删掉测试包，别把痕迹留进仓库
+  try { rmSync(samplePackPath) } catch { /* ignore */ }
 }
 
 console.log('\n[7] 词库缺失与禁用')

@@ -9,7 +9,7 @@
  */
 
 import { loadUx, tagLabel } from './config.js'
-import { briefOf, describeEntry, loadDictionary, lookup } from './dict.js'
+import { briefOf, buildIndex, describeEntry, loadDictionary, lookup } from './dict.js'
 import { fetchAsset, humanizeError } from './net.js'
 import { computeOverlayRect } from './position.js'
 import { ensureStyle, PopoverBody, PhraseBody, UI_ATTR } from './overlay.js'
@@ -141,6 +141,8 @@ export function apply(ctx) {
       /** 词根数据：{ word: [ {part,type,meaning,origin} ] } */
       roots: null,
       rootsStatus: 'not-ready',
+      /** 额外词库包是否已经合并过（只做一次） */
+      packsMerged: false,
     }
 
     const notify = () => {
@@ -190,6 +192,7 @@ export function apply(ctx) {
         runtime.dict = await loadDictionary()
         runtime.status = 'ready'
         runtime.errorMessage = ''
+        void mergePacks()
       } catch (error) {
         runtime.status = 'error'
         runtime.errorMessage = humanizeError(error)
@@ -706,6 +709,56 @@ export function apply(ctx) {
       }, DictionaryPanel)))
     } catch (error) {
       warn('设置页挂载失败（不影响查词）', error)
+    }
+
+    /**
+     * 载入用户下载的额外词库包，合并进主词库。
+     *
+     * 每个包是 `data/packs/<id>.dat`，内容和 dict.dat 同构（词头 → 槽位数组）。
+     * 合并规则：主词库已有的词不覆盖 —— 主词库的义项更完整（带了例句与变位）。
+     *
+     * 失败一律静默：某个包下载了一半或格式坏了，不该让整个查词挂掉。
+     */
+    const mergePacks = async () => {
+      if (runtime.packsMerged) return
+      runtime.packsMerged = true
+      if (runtime.status !== 'ready' || runtime.dict === null) return
+
+      let enabled = {}
+      try {
+        const raw = storage?.getItem?.('dsh-hover-dict:packs')
+        if (typeof raw === 'string' && raw !== '') {
+          const parsed = JSON.parse(raw)
+          if (parsed && typeof parsed === 'object') enabled = parsed
+        }
+      } catch { /* 读不到就当没装 */ }
+
+      const ids = Object.keys(enabled)
+      if (ids.length === 0) return
+
+      let added = 0
+      for (const id of ids) {
+        if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) continue
+        try {
+          const data = await fetchAsset(`${id}.dat`)
+          if (!data || typeof data !== 'object') continue
+          for (const [head, entry] of Object.entries(data)) {
+            if (Object.prototype.hasOwnProperty.call(runtime.dict.entries, head)) continue
+            runtime.dict.entries[head] = entry
+            added += 1
+          }
+        } catch {
+          // 包不存在或格式坏了：跳过这一个，不影响其他
+        }
+      }
+      if (added > 0) {
+        // 重建变位索引，让新词也能按变位查到
+        try {
+          const rebuilt = buildIndex(runtime.dict.entries, runtime.dict.meta)
+          runtime.dict = rebuilt
+        } catch { /* 索引重建失败就保留旧的 */ }
+        notify()
+      }
     }
 
     /** 载入词根数据。拿不到就不显示这一块，不影响查词。 */

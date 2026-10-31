@@ -333,5 +333,15 @@ t('显示生词 run', filledJson.includes('run'))
 t('显示释义', filledJson.includes('可爱的'))
 t('标题带数量', filledJson.includes('(2)'))
 
+// 设置标签页（tab 默认是生词本，这里直接渲染 SettingsPanel 部分不方便，
+// 改为验证开关组件与词库卡片存在于源码里）
+const src = readFileSync(join(ROOT, 'client/src/settings.js'), 'utf8')
+t('有立体感按钮样式', src.includes('border-bottom-width: 2px') && src.includes('transform: translateY(2px)'))
+t('有词库包清单', src.includes('WORD_PACKS'))
+t('系统自带三个包', (src.match(/builtin: true/g) ?? []).length === 3,
+  String((src.match(/builtin: true/g) ?? []).length))
+t('可下载包含商务英语与 IT', src.includes("name: '商务英语'") && src.includes("name: 'IT 与新技术词'"))
+t('有自定义开关控件', src.includes('hds-switch'))
+
 console.log(`\n================ ${pass}/${pass + fail} 通过 ================`)
 if (fail > 0) process.exit(1)

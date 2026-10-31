@@ -21,7 +21,7 @@
  */
 
 
-import { readFileSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gzipSync } from 'node:zlib'
@@ -91,6 +91,42 @@ const DEFAULT_DATA_DIR = join(PACKAGE_DIR, 'data')
 /** 白名单集合。请求进来先查它，查不到直接 404，绝不拼路径。 */
 const ASSET_BY_NAME = new Map(ASSETS.map((asset) => [asset.file, asset]))
 
+/**
+ * 额外的词库包：`data/packs/<名字>.dat`。
+ *
+ * 用白名单 + 目录扫描的结果来判定，**不接受任意文件名** ——
+ * 拼路径再判存在是路径穿越的入口。扫描只在启动时做一次，
+ * 名字必须落在扫描结果里才允许读。
+ *
+ * @returns {Map<string, { file: string, contentType: string, gzip: boolean }>}
+ */
+function scanPacks(dataDir) {
+  const out = new Map()
+  const dir = join(dataDir, 'packs')
+  let entries = []
+  try {
+    entries = readdirSync(dir)
+  } catch {
+    return out
+  }
+  for (const name of entries) {
+    // 只认 .dat，且名字必须是纯字母数字与连字符，挡掉 ../ 与奇怪字符
+    if (!name.endsWith('.dat')) continue
+    if (!/^[a-z0-9][a-z0-9-]*\.dat$/.test(name)) continue
+    out.set(name, { file: `packs/${name}`, contentType: 'application/json; charset=utf-8', gzip: true })
+  }
+  return out
+}
+
+/** 当前可用的全部资源（内置三个 + 目录里扫到的包）。每次请求都重扫，代价可忽略。 */
+function availableAssets(dataDir) {
+  const merged = new Map(ASSET_BY_NAME)
+  for (const [name, spec] of scanPacks(dataDir)) {
+    if (!merged.has(name)) merged.set(name, spec)
+  }
+  return merged
+}
+
 /** gzip 的最小收益门槛：小于这个尺寸压了反而更大，还多一次 CPU。 */
 const GZIP_MIN_BYTES = 1024
 
@@ -123,7 +159,7 @@ export function apply(ctx, config) {
     if (typeof ctx?.get === 'function') {
       try { llm = ctx.get('llm') } catch { llm = undefined }
     }
-    const handler = createHandler({ assets, llm, config: { ...resolved, enabled }, logger: SILENT_LOGGER })
+    const handler = createHandler({ assets, llm, dataDir, config: { ...resolved, enabled }, logger: SILENT_LOGGER })
 
     // 注册即 effect：插件卸载时 disposer 撤掉路由，不泄漏。
     const dispose = ctx.webServer.register({
@@ -175,14 +211,16 @@ export function createAssetResolver(options) {
   const cache = new Map()
 
   return {
-    resolve(name) {
+    resolve(name, whitelist) {
       // 白名单先于一切：不在清单里的名字直接拒绝。
       // 不要「拼出路径再判断存在」——那是路径穿越的入口（../ 会拼出包外的文件）。
-      if (typeof name !== 'string' || !ASSET_BY_NAME.has(name)) {
+      const allowed = whitelist ?? ASSET_BY_NAME
+      if (typeof name !== 'string' || !allowed.has(name)) {
         return { ok: false, code: 'E_NOT_FOUND', message: '没有这个词库文件' }
       }
 
-      const path = join(dataDir, name)
+      const spec = allowed.get(name)
+      const path = join(dataDir, spec.file ?? name)
       let stat
       try {
         stat = statSync(path)
@@ -234,6 +272,9 @@ export function createHandler(options) {
   const { assets, config } = options
   /** 可选的 llm 服务，用来做句子翻译。取不到时翻译接口返回明确提示。 */
   const llm = options.llm
+  /** 词库目录，用于扫描 data/packs/ 下的额外词库包。
+   *  没传就退回包内 data/ —— 传空字符串会让词库包静默失效。 */
+  const dataDir = options.dataDir || DEFAULT_DATA_DIR
   const logger = options.logger ?? SILENT_LOGGER
   const enabled = config?.enabled !== false
 
@@ -301,13 +342,14 @@ export function createHandler(options) {
         return sendError(res, 404, 'E_DISABLED', '悬停查词已关闭', method === 'HEAD')
       }
 
-      const resolved = assets.resolve(tail)
+      const whitelist = availableAssets(dataDir)
+      const resolved = assets.resolve(tail, whitelist)
       if (!resolved.ok) {
         const status = resolved.code === 'E_NOT_FOUND' ? 404 : 503
         return sendError(res, status, resolved.code, resolved.message, method === 'HEAD')
       }
 
-      const asset = ASSET_BY_NAME.get(tail)
+      const asset = whitelist.get(tail)
       let body
       try {
         body = readFileSync(resolved.path)

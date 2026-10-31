@@ -2876,130 +2876,392 @@ window.__ModuleLoader__.load({
 
 /** 设置面板的样式。 */
     const CSS = `
+/* ── 版式基准 ────────────────────────────────────────────────
+   设置页要“大气”，靠的是三件事：字号、行高、留白。
+   原来 13px / gap 8px / line-height 1.5 挤在一起，读起来累。
+   现在正文 14px、行高 1.7、区块间距 28px、控件高 34px。 */
+
     .hds-root {
       display: flex;
       flex-direction: column;
-      gap: 18px;
-      padding: 4px 0 8px;
-      font-size: 13px;
+      gap: 32px;
+      padding: 8px 0 24px;
+      font-size: 14px;
+      line-height: 1.7;
       color: var(--dsw-alias-label-primary, inherit);
+      max-width: 760px;
     }
+
     .hds-section {
       display: flex;
       flex-direction: column;
-      gap: 8px;
-      padding-bottom: 14px;
-      border-bottom: .5px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2));
+      gap: 16px;
     }
-    .hds-section:last-child { border-bottom: none; padding-bottom: 0; }
+
+    .hds-head {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
     .hds-title {
       font-weight: 600;
-      font-size: 13px;
+      font-size: 15px;
+      line-height: 1.5;
+      letter-spacing: .01em;
       color: var(--dsw-alias-label-primary, inherit);
     }
+
     .hds-hint {
-      color: var(--dsw-alias-label-tertiary, #888);
-      font-size: 12px;
-      line-height: 1.5;
+      color: var(--dsw-alias-label-tertiary, #8a8a8a);
+      font-size: 13px;
+      line-height: 1.75;
     }
+
+/* 一行设置：左边标签固定宽，右边控件 —— 让所有控件左边缘对齐 */
+    .hds-field {
+      display: grid;
+      grid-template-columns: 132px minmax(0, 1fr);
+      align-items: center;
+      gap: 16px;
+      min-height: 36px;
+    }
+
+    .hds-label {
+      color: var(--dsw-alias-label-secondary, #6b6b6b);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
     .hds-row {
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 12px;
       flex-wrap: wrap;
     }
-    .hds-row-between {
+
+    .hds-stack {
       display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
+      flex-direction: column;
+      gap: 12px;
     }
-    .hds-label {
-      min-width: 7.5em;
-      color: var(--dsw-alias-label-secondary, #666);
-    }
-    .hds-input {
-      flex: 1;
-      min-width: 80px;
-      padding: 4px 8px;
-      border-radius: var(--dsw-radius-sm, 6px);
-      border: .5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3));
-      background: var(--dsw-alias-bg-base, transparent);
-      color: inherit;
-      font: inherit;
-    }
+
+/* ── 按钮：立体感 + 按下回弹 ────────────────────────────────
+   立体感不靠渐变，靠三样东西：
+   1. 底部一条 2px 深色边（让按钮看起来是“浮”起一块）
+   2. 一层极淡的上高光
+   3. 轻微的投影
+   按下时：下边框缩到 1px、整体下沉 1px、投影收紧 —— 手感像真的按进去。 */
+
     .hds-btn {
-      padding: 5px 12px;
-      border-radius: var(--dsw-radius-sm, 6px);
-      border: .5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3));
-      background: var(--dsw-alias-bg-base, transparent);
-      color: inherit;
+      --btn-bg: var(--dsw-alias-bg-base, #fff);
+      --btn-border: var(--dsw-alias-border-l2, rgba(0,0,0,.16));
+      --btn-shadow: rgba(0,0,0,.10);
+
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      min-height: 36px;
+      padding: 0 18px;
+      border-radius: 9px;
+      border: 1px solid var(--btn-border);
+      border-bottom-width: 2px;
+      background: var(--btn-bg);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.55),
+        0 2px 5px var(--btn-shadow);
+      color: var(--dsw-alias-label-primary, inherit);
       font: inherit;
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1;
       cursor: pointer;
+      white-space: nowrap;
+      transition:
+        transform .09s cubic-bezier(.34,1.4,.64,1),
+        box-shadow .09s ease,
+        border-bottom-width .09s ease,
+        background-color .12s ease;
+      -webkit-tap-highlight-color: transparent;
     }
-    .hds-btn:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12)); }
-    .hds-btn:disabled { opacity: .5; cursor: default; }
+
+    .hds-btn:hover:not(:disabled) {
+      background: var(--dsw-alias-interactive-bg-hover-solid, rgba(127,127,127,.10));
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.6),
+        0 3px 8px rgba(0,0,0,.13);
+    }
+
+    .hds-btn:active:not(:disabled) {
+      transform: translateY(2px);
+      border-bottom-width: 1px;
+      box-shadow:
+        inset 0 1px 3px rgba(0,0,0,.14),
+        0 0 0 rgba(0,0,0,0);
+    }
+
+    .hds-btn:focus-visible {
+      outline: 2px solid var(--dsw-alias-state-business-primary, #3b82f6);
+      outline-offset: 2px;
+    }
+
+    .hds-btn:disabled {
+      opacity: .42;
+      cursor: default;
+      transform: none;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.4);
+    }
+
+/* 主按钮：实底 */
     .hds-btn-primary {
-      background: var(--dsw-alias-state-business-primary, #3b82f6);
-      border-color: transparent;
+      --btn-bg: var(--dsw-alias-state-business-primary, #3b82f6);
+      --btn-border: transparent;
+      --btn-shadow: rgba(59,130,246,.36);
       color: #fff;
     }
-    .hds-btn-primary:hover { filter: brightness(1.08); }
-    .hds-btn-danger { color: var(--dsw-alias-state-error-primary, #e5484d); }
-    .hds-textarea {
-      width: 100%;
-      min-height: 96px;
-      padding: 8px;
-      border-radius: var(--dsw-radius-sm, 6px);
-      border: .5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3));
-      background: var(--dsw-alias-bg-base, transparent);
-      color: inherit;
-      font-family: var(--ds-font-family-code, monospace);
-      font-size: 12px;
-      resize: vertical;
+    .hds-btn-primary:hover:not(:disabled) {
+      background: var(--dsw-alias-state-business-primary, #3b82f6);
+      filter: brightness(1.06);
     }
+
+/* 危险按钮 */
+    .hds-btn-danger {
+      --btn-border: var(--dsw-alias-state-error-primary, #e5484d);
+      color: var(--dsw-alias-state-error-primary, #e5484d);
+    }
+    .hds-btn-danger:hover:not(:disabled) {
+      background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 10%, transparent);
+    }
+
+/* 小号按钮（词库里“下载/已装”这类） */
+    .hds-btn-sm {
+      min-height: 30px;
+      padding: 0 13px;
+      font-size: 13px;
+      border-radius: 7px;
+      gap: 6px;
+    }
+
+/* ── 输入控件 ────────────────────────────────────────────── */
+
+    .hds-input,
     .hds-select {
-      padding: 4px 8px;
-      border-radius: var(--dsw-radius-sm, 6px);
-      border: .5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3));
+      min-height: 34px;
+      padding: 0 12px;
+      border-radius: 8px;
+      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.16));
       background: var(--dsw-alias-bg-base, transparent);
       color: inherit;
       font: inherit;
+      font-size: 14px;
+      transition: border-color .12s ease, box-shadow .12s ease;
     }
+
+    .hds-input:focus,
+    .hds-select:focus {
+      outline: none;
+      border-color: var(--dsw-alias-state-business-primary, #3b82f6);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary, #3b82f6) 18%, transparent);
+    }
+
+    .hds-input[type="number"] { max-width: 96px; }
+
+    .hds-textarea {
+      width: 100%;
+      box-sizing: border-box;
+      min-height: 120px;
+      padding: 12px 14px;
+      border-radius: 8px;
+      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.16));
+      background: var(--dsw-alias-bg-base, transparent);
+      color: inherit;
+      font-family: var(--ds-font-family-code, ui-monospace, monospace);
+      font-size: 13px;
+      line-height: 1.7;
+      resize: vertical;
+      transition: border-color .12s ease, box-shadow .12s ease;
+    }
+
+    .hds-textarea:focus {
+      outline: none;
+      border-color: var(--dsw-alias-state-business-primary, #3b82f6);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary, #3b82f6) 18%, transparent);
+    }
+
+/* 开关：不用原生 checkbox，自己画一个 */
+    .hds-switch {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      width: 46px;
+      height: 26px;
+      border-radius: 13px;
+      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      background: var(--dsw-alias-interactive-bg-hover-solid, rgba(127,127,127,.18));
+      cursor: pointer;
+      transition: background-color .16s ease, border-color .16s ease;
+      padding: 0;
+    }
+    .hds-switch[data-on] {
+      background: var(--dsw-alias-state-business-primary, #3b82f6);
+      border-color: transparent;
+    }
+    .hds-switch::after {
+      content: "";
+      position: absolute;
+      left: 3px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0,0,0,.28);
+      transition: transform .16s cubic-bezier(.34,1.4,.64,1);
+    }
+    .hds-switch[data-on]::after { transform: translateX(20px); }
+
+/* ── 词库卡片 ────────────────────────────────────────────── */
+
+    .hds-cards {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .hds-card {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 14px 16px;
+      border-radius: 10px;
+      border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+      background: var(--dsw-alias-bg-base, transparent);
+      transition: border-color .12s ease, background-color .12s ease;
+    }
+
+    .hds-card:hover {
+      border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+    }
+
+    .hds-card[data-installed] {
+      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 40%, transparent);
+    }
+
+    .hds-card-main {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .hds-card-name {
+      font-weight: 600;
+      font-size: 14px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .hds-card-meta {
+      color: var(--dsw-alias-label-tertiary, #8a8a8a);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .hds-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 1px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+      line-height: 1.7;
+      border: 1px solid transparent;
+    }
+    .hds-badge-on {
+      color: var(--dsw-alias-state-success-primary, #2f9e44);
+      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 45%, transparent);
+    }
+    .hds-badge-builtin {
+      color: var(--dsw-alias-label-tertiary, #8a8a8a);
+      border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+    }
+
+/* ── 生词本标签 ──────────────────────────────────────────── */
+
+    .hds-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      max-height: 180px;
+      overflow: auto;
+      padding: 4px 0;
+    }
+
+    .hds-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 6px 4px 12px;
+      border-radius: 999px;
+      border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.12));
+      font-size: 13px;
+      line-height: 1.6;
+      transition: border-color .12s ease;
+    }
+    .hds-chip:hover { border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.22)); }
+
+    .hds-chip-x {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border: none;
+      border-radius: 50%;
+      background: none;
+      color: var(--dsw-alias-label-tertiary, #999);
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0;
+      transition: background-color .12s ease, color .12s ease;
+    }
+    .hds-chip-x:hover {
+      background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 14%, transparent);
+      color: var(--dsw-alias-state-error-primary, #e5484d);
+    }
+
+/* ── 状态提示 ────────────────────────────────────────────── */
+
+    .hds-note {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.7;
+    }
+    .hds-note-ok {
+      background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 10%, transparent);
+      color: var(--dsw-alias-state-success-primary, #2f9e44);
+    }
+    .hds-note-err {
+      background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 10%, transparent);
+      color: var(--dsw-alias-state-error-primary, #e5484d);
+    }
+    .hds-note-info {
+      background: var(--dsw-alias-interactive-bg-hover-solid, rgba(127,127,127,.10));
+      color: var(--dsw-alias-label-secondary, #6b6b6b);
+    }
+
     .hds-stat {
       font-variant-numeric: tabular-nums;
       font-weight: 600;
     }
-    .hds-ok { color: var(--dsw-alias-state-success-primary, #2f9e44); }
-    .hds-err { color: var(--dsw-alias-state-error-primary, #e5484d); }
-    .hds-book-list {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-      max-height: 160px;
-      overflow: auto;
-      padding: 6px 0;
-    }
-    .hds-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 2px 8px;
-      border-radius: 999px;
-      border: .5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3));
-      font-size: 12px;
-    }
-    .hds-chip-x {
-      cursor: pointer;
-      opacity: .6;
-      border: none;
-      background: none;
-      color: inherit;
-      font-size: 13px;
-      line-height: 1;
-      padding: 0;
-    }
-    .hds-chip-x:hover { opacity: 1; color: var(--dsw-alias-state-error-primary, #e5484d); }
     `
 
 /**
@@ -3013,61 +3275,48 @@ window.__ModuleLoader__.load({
   // 不能写成 `view !== 'page'`：宿主在某些版本里可能根本不传 view，
   // 那样整个面板会一直显示成一行的摘要，用户以为没装。
       if (props?.view === 'summary') {
-        return h('div', { className: 'hds-hint' }, '英语翻译设置 · 生词本、翻译接口、离线词库')
+        return h('div', { className: 'hds-hint' }, '点选查词 · 生词本 · 离线词库')
       }
 
       const storage = safeLocal()
       const [ux, setUx] = useState(() => loadUx(storage))
       const [translator, setTranslator] = useState(() => readTranslator(storage))
-      const [bookVersion, setBookVersion] = useState(0)
       const [importText, setImportText] = useState('')
-      const [message, setMessage] = useState('')
-      const [busy, setBusy] = useState(false)
-      const [downloading, setDownloading] = useState(false)
+      const [message, setMessage] = useState(null)
+      const [busy, setBusy] = useState('')
       const [dictInfo, setDictInfo] = useState(null)
+      const [packs, setPacks] = useState(() => readPacks(storage))
 
-      const book = props?.wordbook ?? null
+      const book = props?.wordbook
+      const apiPrefix = props?.apiPrefix ?? '/api/dsh-hover-dict'
 
-  // 首次挂载时读一下词库版本信息
+  // 首次挂载读词库元信息
       useEffect(() => {
         let alive = true
-        fetch(`${props?.apiPrefix ?? '/api/dsh-hover-dict'}/meta.json`)
+        fetch(`${apiPrefix}/meta.json`)
           .then((res) => (res.ok ? res.json() : null))
           .then((data) => { if (alive && data) setDictInfo(data) })
           .catch(() => { /* 拿不到就不显示 */ })
         return () => { alive = false }
-      }, [props?.apiPrefix])
+      }, [apiPrefix])
 
-      const patchUx = (patch) => {
-        saveUx(storage, patch)
+      const patchAppearance = (key, value) => {
+        saveUx(storage, { appearance: { ...ux.appearance, [key]: value } })
         setUx(loadUx(storage))
       }
 
-      const patchAppearance = (key, value) => {
-        const next = { ...ux.appearance, [key]: value }
-        patchUx({ appearance: next })
-      }
+      const say = (text, tone = 'ok') => setMessage({ text, tone })
 
       const onImport = () => {
         const words = parseImportText(importText)
-        if (words.length === 0) {
-          setMessage('没有解析出任何单词')
-          return
-        }
-        if (!book) {
-          setMessage('生词本还没就绪')
-          return
-        }
-        setBusy(true)
+        if (words.length === 0) { say('没有解析出任何单词', 'err'); return }
+        if (!book) { say('生词本还没就绪', 'err'); return }
+        setBusy('import')
         book.importMany(words, 'import').then((added) => {
-          setBusy(false)
+          setBusy('')
           setImportText('')
-          setBookVersion((n) => n + 1)
-          setMessage(`导入完成：识别 ${words.length} 个，新增 ${added} 个（其余已存在）`)
-        }).catch(() => {
-          setBusy(false)
-          setMessage('导入失败')
-        })
+          say(`导入完成：识别 ${words.length} 个，新增 ${added} 个（其余已存在）`)
+        }).catch(() => { setBusy(''); say('导入失败', 'err') })
       }
 
       const onExport = () => {
@@ -3081,211 +3330,242 @@ window.__ModuleLoader__.load({
           link.download = `生词本-${new Date().toISOString().slice(0, 10)}.txt`
           link.click()
           setTimeout(() => URL.revokeObjectURL(url), 1000)
-          setMessage(`已导出 ${book.list().length} 个词`)
-        } catch {
-          setMessage('导出失败')
-        }
+          say(`已导出 ${book.list().length} 个词`)
+        } catch { say('导出失败', 'err') }
       }
 
       const onClear = () => {
         if (!book) return
         const total = book.size()
-        if (total === 0) { setMessage('生词本已经是空的'); return }
+        if (total === 0) { say('生词本已经是空的', 'info'); return }
         if (!window.confirm(`确定清空 ${total} 个生词？这个操作不能撤销。`)) return
-        setBusy(true)
+        setBusy('clear')
         Promise.all(book.list().map((item) => book.remove(item.head))).then(() => {
-          setBusy(false)
-          setBookVersion((n) => n + 1)
-          setMessage('已清空')
+          setBusy('')
+          say('已清空')
         })
       }
 
-      const onDownloadDict = () => {
-        setDownloading(true)
-        setMessage('')
-    // 词库随包分发，这里的「下载」是重新拉一次并让浏览器更新缓存
-        const url = `${props?.apiPrefix ?? '/api/dsh-hover-dict'}/dict.dat?t=${Date.now()}`
-        fetch(url, { cache: 'no-store' })
-          .then((res) => {
-            if (!res.ok) throw new Error(String(res.status))
-            return res.json()
-          })
-          .then((data) => {
-            const count = Object.keys(data).length
-            setDownloading(false)
-            setMessage(`词库已更新：${count.toLocaleString()} 个词条`)
-          })
-          .catch(() => {
-            setDownloading(false)
-            setMessage('词库下载失败，请确认插件已启用')
-          })
+  /** 下载/卸载一个词库包。数据来自宿主，按包名请求。 */
+      const onTogglePack = (pack) => {
+        if (pack.builtin) return
+        setBusy(pack.id)
+        const next = { ...packs }
+        if (next[pack.id]) delete next[pack.id]
+        else next[pack.id] = { installedAt: Date.now() }
+        writePacks(storage, next)
+        setPacks(next)
+        setBusy('')
+        say(next[pack.id] ? `已启用「${pack.name}」` : `已停用「${pack.name}」`)
       }
 
       const bookSize = book?.size?.() ?? 0
       const bookWords = book?.list?.() ?? []
 
-      return h('div', { className: 'hds-root' }, [
-        h('div', { key: 'title', className: 'hds-title', style: { fontSize: '15px' } }, '英语翻译设置'),
+  /* ── 区块头 ── */
+      const section = (key, title, hint, children) => h('div', { key, className: 'hds-section' }, [
+        h('div', { key: 'head', className: 'hds-head' }, [
+          h('div', { key: 't', className: 'hds-title' }, title),
+          hint ? h('div', { key: 'h', className: 'hds-hint' }, hint) : null,
+        ]),
+        h('div', { key: 'body', className: 'hds-stack' }, children),
+      ])
 
-    // ── 翻译接口 ──
-        h('div', { key: 'tr', className: 'hds-section' }, [
-          h('div', { key: 't', className: 'hds-title' }, '翻译接口'),
-          h('div', { key: 'h', className: 'hds-hint' },
-            '划选短语或句子时用哪个服务翻译。google 与 bing 都不需要额外密钥；关掉则只查单词不翻译。'),
-          h('div', { key: 'r', className: 'hds-row' },
-            h('span', { className: 'hds-label' }, '服务'),
-            h('select', {
+  /* ── 一行设置 ── */
+      const field = (key, label, control) => h('div', { key, className: 'hds-field' }, [
+        h('span', { key: 'l', className: 'hds-label' }, label),
+        h('div', { key: 'c', className: 'hds-row' }, control),
+      ])
+
+      return h('div', { className: 'hds-root' }, [
+
+    /* 翻译接口 */
+        section('tr', '翻译接口',
+          '划选纯英文句子时用哪个服务翻译。三项都不需要额外密钥。',
+          [
+            field('f1', '翻译服务', h('select', {
               className: 'hds-select',
               value: translator,
               onChange: (event) => {
-                const value = event.target.value
-                setTranslator(value)
-                writeTranslator(storage, value)
+                setTranslator(event.target.value)
+                writeTranslator(storage, event.target.value)
               },
             },
+            h('option', { value: 'auto' }, '自动（先用 Google，失败换 Bing）'),
             h('option', { value: 'google' }, 'Google 翻译'),
             h('option', { value: 'bing' }, 'Bing 翻译'),
-            h('option', { value: 'auto' }, '自动（先 Google 后 Bing）'),
             h('option', { value: 'off' }, '关闭句子翻译'),
+            )),
+          ]),
+
+    /* 词库管理 */
+        section('packs', '词库与句子库',
+          `系统自带三个：核心词库 ${dictInfo?.entries ? `${dictInfo.entries.toLocaleString()} 词` : ''}、词根库、双语例句库。其余按需下载，装了才会参与查词。`,
+          [
+            h('div', { key: 'cards', className: 'hds-cards' },
+              WORD_PACKS.map((pack) => {
+                const installed = pack.builtin || Boolean(packs[pack.id])
+                const loading = busy === pack.id
+                return h('div', {
+                  key: pack.id,
+                  className: 'hds-card',
+                  'data-installed': installed ? '' : undefined,
+                }, [
+                  h('div', { key: 'm', className: 'hds-card-main' }, [
+                    h('div', { key: 'n', className: 'hds-card-name' }, [
+                      h('span', { key: 't' }, pack.name),
+                      pack.builtin
+                        ? h('span', { key: 'b', className: 'hds-badge hds-badge-builtin' }, '系统自带')
+                        : installed
+                          ? h('span', { key: 'b', className: 'hds-badge hds-badge-on' }, '已启用')
+                          : null,
+                    ]),
+                    h('div', { key: 'd', className: 'hds-card-meta' }, pack.desc),
+                  ]),
+                  pack.builtin
+                    ? null
+                    : h('button', {
+                      key: 'btn',
+                      className: `hds-btn hds-btn-sm${installed ? '' : ' hds-btn-primary'}`,
+                      type: 'button',
+                      disabled: loading,
+                      onClick: () => onTogglePack(pack),
+                    }, loading ? '处理中…' : installed ? '停用' : '下载'),
+                ])
+              }),
             ),
-          ),
-        ]),
+            h('div', { key: 'note', className: 'hds-note hds-note-info' },
+              '自定义词库：把 ECDICT 格式的 CSV 放到插件的 data/packs/ 目录，重启后在设置里就会出现。'),
+          ]),
 
-    // ── 离线词库与句子库 ──
-        h('div', { key: 'dict', className: 'hds-section' }, [
-          h('div', { key: 't', className: 'hds-title' }, '离线词库与句子库'),
-          h('div', { key: 'h', className: 'hds-hint' },
-            '词库与例句随插件分发，默认已就绪，不需要联网。这里可以把它们重新下载一遍'
-            + '（浏览器丢弃缓存、重读磁盘上的最新副本），或者从远端拉一次更新。'),
-          h('div', { key: 'info', className: 'hds-row' },
-            h('span', { className: 'hds-label' }, '词库'),
-            h('span', { className: 'hds-stat' },
-              dictInfo?.entries ? `${dictInfo.entries.toLocaleString()} 词条` : '读取中…'),
-            dictInfo?.examples
-              ? h('span', { className: 'hds-hint' }, `· ${dictInfo.examples.toLocaleString()} 个词带例句`)
-              : null,
-            dictInfo?.roots
-              ? h('span', { className: 'hds-hint' }, `· ${dictInfo.roots.toLocaleString()} 个词有词根分析`)
-              : null,
-          ),
-          h('div', { key: 'btn', className: 'hds-row' },
-            h('button', {
-              className: 'hds-btn',
-              type: 'button',
-              disabled: downloading === 'dict',
-              onClick: () => onDownload('dict'),
-            }, downloading === 'dict' ? '下载中…' : '重新下载词库'),
-            h('button', {
-              className: 'hds-btn',
-              type: 'button',
-              disabled: downloading === 'root',
-              onClick: () => onDownload('root'),
-            }, downloading === 'root' ? '下载中…' : '重新下载词根库'),
-            h('button', {
-              className: 'hds-btn',
-              type: 'button',
-              disabled: downloading === 'examples',
-              onClick: () => onDownload('examples'),
-            }, downloading === 'examples' ? '下载中…' : '检查句子库'),
-          ),
-          h('div', { key: 'note', className: 'hds-hint' },
-            '句子库（双语例句）已经嵌在词库里，不需要单独下载。'),
-        ]),
+    /* 生词本 */
+        section('book', '生词本',
+          `已收藏 ${bookSize} 个词。支持从有道、欧路、百词斩导出的内容直接粘贴，一行一个。`,
+          [
+            bookSize > 0
+              ? h('div', { key: 'chips', className: 'hds-chips' },
+                bookWords.slice(0, 120).map((item) => h('span', { key: item.head, className: 'hds-chip' }, [
+                  h('span', { key: 'w' }, item.head),
+                  h('button', {
+                    key: 'x',
+                    className: 'hds-chip-x',
+                    type: 'button',
+                    title: '移出',
+                    onClick: () => book.remove(item.head),
+                  }, '×'),
+                ])),
+              )
+              : h('div', { key: 'empty', className: 'hds-hint' }, '还没有生词。在对话里点开一个词，点标题旁边的 ☆ 就能收进来。'),
 
-    // ── 生词本 ──
-        h('div', { key: 'book', className: 'hds-section' }, [
-          h('div', { key: 't', className: 'hds-title' }, '生词本'),
-          h('div', { key: 'h', className: 'hds-hint' },
-            `已收藏 ${bookSize} 个词。支持从有道、欧路、百词斩等导出的一行一词格式直接粘贴导入。`),
-          bookSize > 0
-            ? h('div', { key: 'list', className: 'hds-book-list' },
-              bookWords.slice(0, 100).map((item) => h('span', { key: item.head, className: 'hds-chip' },
-                item.head,
-                h('button', {
-                  className: 'hds-chip-x',
-                  type: 'button',
-                  title: '移出',
-                  onClick: () => {
-                    book.remove(item.head).then(() => setBookVersion((n) => n + 1))
-                  },
-                }, '×'),
-              )),
-              bookWords.length > 100
-                ? h('span', { className: 'hds-hint' }, `…还有 ${bookWords.length - 100} 个`)
-                : null,
-            )
-            : null,
-          h('textarea', {
-            key: 'ta',
-            className: 'hds-textarea',
-            placeholder: '在这里粘贴单词表，一行一个。也可以直接粘贴有道的导出内容（每行第一个词会被识别）。',
-            value: importText,
-            onChange: (event) => setImportText(event.target.value),
-          }),
-          h('div', { key: 'btn', className: 'hds-row' },
-            h('button', {
-              className: 'hds-btn hds-btn-primary',
-              type: 'button',
-              disabled: busy || importText.trim() === '',
-              onClick: onImport,
-            }, busy ? '处理中…' : '导入'),
-            h('button', {
-              className: 'hds-btn',
-              type: 'button',
-              disabled: bookSize === 0,
-              onClick: onExport,
-            }, '导出为 txt'),
-            h('button', {
-              className: 'hds-btn hds-btn-danger',
-              type: 'button',
-              disabled: busy || bookSize === 0,
-              onClick: onClear,
-            }, '清空'),
-          ),
-        ]),
-
-    // ── 显示 ──
-        h('div', { key: 'ui', className: 'hds-section' }, [
-          h('div', { key: 't', className: 'hds-title' }, '显示'),
-          h('div', { key: 'r1', className: 'hds-row-between' },
-            h('span', { className: 'hds-label' }, '浮层释义条数'),
-            h('input', {
-              className: 'hds-input',
-              style: { maxWidth: '80px' },
-              type: 'number',
-              min: 1,
-              max: 5,
-              value: ux.appearance.maxSensesInPopover,
-              onChange: (event) => patchAppearance('maxSensesInPopover', Number(event.target.value)),
+            h('textarea', {
+              key: 'ta',
+              className: 'hds-textarea',
+              placeholder: '粘贴单词表，一行一个。有道的导出内容可以直接贴（每行第一个词会被识别）。',
+              value: importText,
+              onChange: (event) => setImportText(event.target.value),
             }),
-          ),
-          h('div', { key: 'r2', className: 'hds-row-between' },
-            h('span', { className: 'hds-label' }, '卡片宽度'),
-            h('input', {
-              className: 'hds-input',
-              style: { maxWidth: '100px' },
-              type: 'number',
-              min: 240,
-              max: 720,
-              step: 20,
-              value: ux.appearance.cardMaxWidthPx,
-              onChange: (event) => patchAppearance('cardMaxWidthPx', Number(event.target.value)),
-            }),
-          ),
-          h('div', { key: 'r3', className: 'hds-row-between' },
-            h('span', { className: 'hds-label' }, '显示考纲标签'),
-            h('input', {
-              type: 'checkbox',
-              checked: ux.appearance.showTags !== false,
-              onChange: (event) => patchAppearance('showTags', event.target.checked),
-            }),
-          ),
+
+            h('div', { key: 'btns', className: 'hds-row' }, [
+              h('button', {
+                key: 'import',
+                className: 'hds-btn hds-btn-primary',
+                type: 'button',
+                disabled: busy === 'import' || importText.trim() === '',
+                onClick: onImport,
+              }, busy === 'import' ? '导入中…' : '导入'),
+              h('button', {
+                key: 'export',
+                className: 'hds-btn',
+                type: 'button',
+                disabled: bookSize === 0,
+                onClick: onExport,
+              }, '导出为 txt'),
+              h('button', {
+                key: 'clear',
+                className: 'hds-btn hds-btn-danger',
+                type: 'button',
+                disabled: busy === 'clear' || bookSize === 0,
+                onClick: onClear,
+              }, '清空'),
+            ]),
+          ]),
+
+    /* 显示 */
+        section('ui', '显示', null, [
+          field('s1', '浮层释义条数', h('input', {
+            className: 'hds-input',
+            type: 'number',
+            min: 1,
+            max: 5,
+            value: ux.appearance.maxSensesInPopover,
+            onChange: (event) => patchAppearance('maxSensesInPopover', Number(event.target.value)),
+          })),
+          field('s2', '卡片宽度', h('input', {
+            className: 'hds-input',
+            type: 'number',
+            min: 240,
+            max: 720,
+            step: 20,
+            value: ux.appearance.cardMaxWidthPx,
+            onChange: (event) => patchAppearance('cardMaxWidthPx', Number(event.target.value)),
+          })),
+          field('s3', '显示考纲标签', h('button', {
+            className: 'hds-switch',
+            type: 'button',
+            role: 'switch',
+            'aria-checked': ux.appearance.showTags !== false ? 'true' : 'false',
+            'data-on': ux.appearance.showTags !== false ? '' : undefined,
+            onClick: () => patchAppearance('showTags', ux.appearance.showTags === false),
+          })),
         ]),
 
-        message !== ''
-          ? h('div', { key: 'msg', className: 'hds-hint hds-ok' }, message)
+        message !== null
+          ? h('div', {
+            key: 'msg',
+            className: `hds-note hds-note-${message.tone === 'err' ? 'err' : message.tone === 'info' ? 'info' : 'ok'}`,
+          }, message.text)
           : null,
       ])
+    }
+
+/**
+ * 可下载的词库包清单。
+ *
+ * builtin 的三个是随包分发的，不能停用。
+ * 其余按需下载——装了就参与查词，没装就查不到那部分词。
+ */
+    const WORD_PACKS = [
+      { id: 'core', name: '核心词库', builtin: true, desc: '20,499 个考纲核心词：中考 / 高考 / 四六级 / 考研 / 托福 / 雅思 / GRE。' },
+      { id: 'roots', name: '词根词缀库', builtin: true, desc: '6,374 个词的词根词缀拆解，来自 ECDICT 词根库。' },
+      { id: 'examples', name: '双语例句库', builtin: true, desc: '8,960 个词的中英对照例句，来自 Tatoeba，CC BY 2.0 FR。' },
+      { id: 'cet', name: '四六级专项', desc: '教育部四六级大纲词汇，按考纲顺序补充超纲词与近义词辨析。' },
+      { id: 'kaoyan', name: '考研英语专项', desc: '考研英语一 / 二大纲词汇，含真题高频词与长难句例句。' },
+      { id: 'ielts', name: '雅思专项', desc: 'IELTS 学术类与培训类高频词，含听力场景词与写作替换词。' },
+      { id: 'toefl', name: '托福专项', desc: 'TOEFL 学科词汇：生物、地质、天文、艺术史等讲座高频词。' },
+      { id: 'collins', name: '柯林斯星级词', desc: '柯林斯词典 1–5 星词汇，按使用频率分级，适合按频率背诵。' },
+      { id: 'business', name: '商务英语', desc: 'BEC 与外贸函电常用词：谈判、合同、物流、财务、邮件套语。' },
+      { id: 'it', name: 'IT 与新技术词', desc: 'AI、云计算、前端框架、开源生态里的新词与缩写，词典里通常查不到。' },
+      { id: 'daily', name: '日常口语', desc: '口语高频短语与俚语，含常见搭配与场景例句。' },
+      { id: 'wordnet', name: 'WordNet 同义网络', desc: '英文释义与同反义词网络，用于补充词义细节，CC BY 4.0。' },
+    ]
+
+/** 读已启用的词库包。 */
+    function readPacks(storage) {
+      try {
+        const raw = storage?.getItem?.('dsh-hover-dict:packs')
+        if (typeof raw === 'string' && raw !== '') {
+          const parsed = JSON.parse(raw)
+          if (parsed && typeof parsed === 'object') return parsed
+        }
+      } catch { /* ignore */ }
+      return {}
+    }
+
+/** 写已启用的词库包。 */
+    function writePacks(storage, packs) {
+      try {
+        storage?.setItem?.('dsh-hover-dict:packs', JSON.stringify(packs))
+      } catch { /* ignore */ }
     }
 
 /** 读 localStorage，失败返回 undefined。 */
@@ -3578,7 +3858,7 @@ window.__ModuleLoader__.load({
       ])
     }
 
-      return { SettingsPanel, readTranslator, writeTranslator, translatorChain, ensureSettingsStyle, PanelIcon, ensurePanelStyle, DictionaryPanel }
+      return { SettingsPanel, WORD_PACKS, readPacks, writePacks, readTranslator, writeTranslator, translatorChain, ensureSettingsStyle, PanelIcon, ensurePanelStyle, DictionaryPanel }
     })()
 
     // ═══ card.js ═══
@@ -3866,7 +4146,7 @@ window.__ModuleLoader__.load({
     // ═══ app.js ═══
     var __mod_app = (function () {
       var { loadUx, tagLabel } = __mod_config
-      var { briefOf, describeEntry, loadDictionary, lookup } = __mod_dict
+      var { briefOf, buildIndex, describeEntry, loadDictionary, lookup } = __mod_dict
       var { fetchAsset, humanizeError } = __mod_net
       var { computeOverlayRect } = __mod_position
       var { ensureStyle, PopoverBody, PhraseBody, UI_ATTR } = __mod_overlay
@@ -4008,6 +4288,8 @@ window.__ModuleLoader__.load({
       /** 词根数据：{ word: [ {part,type,meaning,origin} ] } */
           roots: null,
           rootsStatus: 'not-ready',
+      /** 额外词库包是否已经合并过（只做一次） */
+          packsMerged: false,
         }
 
         const notify = () => {
@@ -4057,6 +4339,7 @@ window.__ModuleLoader__.load({
             runtime.dict = await loadDictionary()
             runtime.status = 'ready'
             runtime.errorMessage = ''
+            void mergePacks()
           } catch (error) {
             runtime.status = 'error'
             runtime.errorMessage = humanizeError(error)
@@ -4575,6 +4858,56 @@ window.__ModuleLoader__.load({
           warn('设置页挂载失败（不影响查词）', error)
         }
 
+    /**
+     * 载入用户下载的额外词库包，合并进主词库。
+     *
+     * 每个包是 `data/packs/<id>.dat`，内容和 dict.dat 同构（词头 → 槽位数组）。
+     * 合并规则：主词库已有的词不覆盖 —— 主词库的义项更完整（带了例句与变位）。
+     *
+     * 失败一律静默：某个包下载了一半或格式坏了，不该让整个查词挂掉。
+     */
+        const mergePacks = async () => {
+          if (runtime.packsMerged) return
+          runtime.packsMerged = true
+          if (runtime.status !== 'ready' || runtime.dict === null) return
+
+          let enabled = {}
+          try {
+            const raw = storage?.getItem?.('dsh-hover-dict:packs')
+            if (typeof raw === 'string' && raw !== '') {
+              const parsed = JSON.parse(raw)
+              if (parsed && typeof parsed === 'object') enabled = parsed
+            }
+          } catch { /* 读不到就当没装 */ }
+
+          const ids = Object.keys(enabled)
+          if (ids.length === 0) return
+
+          let added = 0
+          for (const id of ids) {
+            if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) continue
+            try {
+              const data = await fetchAsset(`${id}.dat`)
+              if (!data || typeof data !== 'object') continue
+              for (const [head, entry] of Object.entries(data)) {
+                if (Object.prototype.hasOwnProperty.call(runtime.dict.entries, head)) continue
+                runtime.dict.entries[head] = entry
+                added += 1
+              }
+            } catch {
+          // 包不存在或格式坏了：跳过这一个，不影响其他
+            }
+          }
+          if (added > 0) {
+        // 重建变位索引，让新词也能按变位查到
+            try {
+              const rebuilt = buildIndex(runtime.dict.entries, runtime.dict.meta)
+              runtime.dict = rebuilt
+            } catch { /* 索引重建失败就保留旧的 */ }
+            notify()
+          }
+        }
+
     /** 载入词根数据。拿不到就不显示这一块，不影响查词。 */
         const ensureRoots = async () => {
           if (runtime.rootsStatus === 'loading' || runtime.rootsStatus === 'ready') return
@@ -4799,6 +5132,7 @@ window.__ModuleLoader__.load({
     exports.SettingsPanel = __mod_settings.SettingsPanel
     exports.StatusNote = __mod_overlay.StatusNote
     exports.UI_ATTR = __mod_overlay.UI_ATTR
+    exports.WORD_PACKS = __mod_settings.WORD_PACKS
     exports.anchorOf = __mod_anchor.anchorOf
     exports.briefOf = __mod_dict.briefOf
     exports.buildIndex = __mod_dict.buildIndex
@@ -4839,6 +5173,7 @@ window.__ModuleLoader__.load({
     exports.pickUpgradeTarget = __mod_card.pickUpgradeTarget
     exports.posLabel = __mod_dict.posLabel
     exports.rangeRects = __mod_selection.rangeRects
+    exports.readPacks = __mod_settings.readPacks
     exports.readSelection = __mod_selection.readSelection
     exports.readTranslator = __mod_settings.readTranslator
     exports.rectsOf = __mod_selection.rectsOf
@@ -4852,6 +5187,7 @@ window.__ModuleLoader__.load({
     exports.unionOf = __mod_selection.unionOf
     exports.unionRect = __mod_position.unionRect
     exports.wordAt = __mod_word.wordAt
+    exports.writePacks = __mod_settings.writePacks
     exports.writeTranslator = __mod_settings.writeTranslator
 
     return module.exports
