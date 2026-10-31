@@ -1,0 +1,129 @@
+# 点选查词 · dsh-hover-dict
+
+在 DeepSeek Harness 里读英文时，点一下词就看到它什么意思。
+
+## 它做什么
+
+| 你做什么 | 出现什么 |
+|---|---|
+| 单击一个英文单词 | 小浮层：词性、中文释义、考纲标签 |
+| 双击一个英文单词 | 同上 |
+| 左键划选一个词 | 同上 |
+| 左键划选一个短语或句子 | 中文翻译 |
+| 点小浮层 | 就地展开大卡片：全部义项、英英释义、词形变化、双语例句 |
+
+**整个界面都能点**，包括代码块、行内代码和工具调用卡片里的英文 —— 那些地方恰恰最常需要查词（变量名、命令、报错信息）。
+
+**结果不会自己消失。** 只有三种情况关闭：点浮层外面、按 Esc、重新选别的。
+
+**选中词不加任何底色或边框。** 早先版本给选中的词画半透明底，深色主题下等于把那几个字糊掉一层灰。现在完全不加视觉覆盖，浮层自己就在词旁边。
+
+没有音标，没有发音。
+
+## 为什么查词不等网络
+
+词库跟着插件走，总共约 3.4 MB（gzip 后 1.4 MB），首次使用的空闲时刻一次性读进内存，之后每次查词是内存里的哈希查找，几微秒。
+
+句子翻译要联网，走宿主已有的 `translator` 服务（`google` / `bing` 后端）。如果宿主没装这个服务，划选句子会显示一句「这个版本的宿主没有提供翻译服务」，其余功能不受影响。
+
+## 词库内容
+
+| 项 | 数量 |
+|---|---|
+| 词条 | 20,499 |
+| 有双语例句的词 | 8,960 |
+| 有词形变化的词 | 13,793 |
+| 可查词形（含 ran → run 这类变位） | 46,011 |
+
+收词口径：ECDICT 里带考纲标签（中考 / 高考 / 四六级 / 考研 / 托福 / 雅思 / GRE）或属高频词、柯林斯星级词、牛津 3000 核心词的条目。
+
+真实英文段落的覆盖率实测：技术类文本约 86%，一般论述约 97%。查不到的多是缩写、`ctx` 这类标识符，以及 `you`、`whose` 这类本来不必查的虚词。
+
+数据来源与许可见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。ECDICT 是 MIT，Tatoeba 是 CC BY 2.0 FR，两者都允许再分发。
+
+## 它不改正文
+
+不把单词包成 span，不插标记，不改任何文字节点。
+
+原因：DSH 的回复是 React 增量渲染的，流式输出时只重画末尾几块，前面的块保持不动，选区和复制都依赖这个结构。往正文里插节点，重画和复制会一起坏。
+
+做法是读浏览器的选区，或者按鼠标坐标反查字符位置（`document.caretRangeFromPoint`），浮层画在插件自己的覆盖层里。
+
+## 安装
+
+```
+dsh plugin add <本目录的绝对路径>
+```
+
+装完**完全退出 DSH 再打开**（关窗口不算退出）。
+
+然后在任意含英文的地方单击一个词，或者按住左键划选一段文字。
+
+## 配置
+
+改 profile 的 `cordis.patch.yml` 里 `- id: hover-dict` 那一行：
+
+```yaml
+- id: hover-dict
+  name: 'dsh-hover-dict'
+  config:
+    enabled: true          # 总开关，关掉后不注册任何监听
+    dataDir: ''            # 词库目录，留空用包内 data/
+    maxBytesPerFile: 33554432
+```
+
+界面参数存在浏览器的 localStorage 里，键是 `dsh-hover-dict:ux`。改坏了删掉这个键就恢复默认。
+
+| 参数 | 默认值 | 范围 | 说明 |
+|---|---|---|---|
+| `maxSensesInPopover` | 2 | 1–5 | 浮层里最多显示几条中文释义 |
+| `cardMaxWidthPx` | 420 | 240–720 | 浮层与卡片的宽度 |
+| `cardMaxHeightRatio` | 0.7 | 0.3–0.95 | 卡片高度上限占视口比例 |
+| `offsetPx` | 6 | 0–32 | 浮层与选中内容的间距 |
+| `viewportMarginPx` | 8 | 0–48 | 贴边时留多少白 |
+| `showTags` | true | — | 是否显示考纲标签 |
+
+## 重新生成词库
+
+词库是构建期产物，已经随包提供。要改筛选口径或换语料才需要重跑：
+
+```
+node scripts/build-data.mjs --src <原始数据目录> --out data
+```
+
+它会读该目录下的 `ecdict.csv` 与三个 Tatoeba 文件，产出 `data/dict.dat` 与 `data/meta.json`。
+
+## 开发
+
+```
+node client/build.mjs         # 从 client/src/ 生成 client.js
+node client/build.mjs --check # 校验产物与源码同步
+node scripts/test-host.mjs    # 宿主侧路由测试（起真 http 服务器）
+node client/test/smoke.mjs    # 端到端冒烟（假宿主里装载产物）
+```
+
+各模块单测在 `client/test/` 下，文件名前缀 `_` 的是跑单个模块用的。
+
+源码分模块放在 `client/src/`，构建期拼成单文件 `client.js`。不用打包器是因为这个仓库的运行期依赖必须是零。
+
+**改完源码务必跑一次 `node client/build.mjs`** —— `client.js` 是产物，只改 `client/src/` 不会生效。
+
+## 结构
+
+```
+index.js              宿主侧：词库文件的静态路由，带 ETag 与 gzip
+client.js             浏览器半构建产物（不要手改）
+client/src/           word / hit / selection / dict / net / position / overlay / card / config / app
+client/build.mjs      拼接构建 + 产物校验
+data/dict.dat         词库（以词头为键的 JSON）
+data/meta.json        构建元信息
+locale/               界面文案（中 / 英）
+scripts/build-data.mjs  数据构建脚本
+scripts/test-host.mjs   宿主侧测试
+docs/架构.md          设计文档
+.snapshots/           源码快照，防改动丢失
+```
+
+## 许可
+
+MIT，见 [LICENSE](LICENSE)。

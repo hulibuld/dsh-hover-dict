@@ -1,0 +1,38 @@
+{
+  "meta": {
+    "title": "Hover dictionary",
+    "description": "Hover an English word in an assistant reply or its reasoning to see its part of speech and Chinese meaning; click to expand the full entry in place. Offline dictionary, no network, no API key."
+  },
+  "popover": {
+    "loading": "Loading dictionary…",
+    "more": "more…",
+    "retry": "Dictionary not ready. Click to retry",
+    "failed": "Lookup unavailable"
+  },
+  "card": {
+    "definition": "Definition",
+    "forms": "Word forms",
+    "examples": "Examples",
+    "pin": "Pin",
+    "unpin": "Unpin",
+    "close": "Close"
+  },
+  "tag": {
+    "cet4": "CET-4",
+    "cet6": "CET-6",
+    "ky": "Postgrad",
+    "ielts": "IELTS"
+  },
+  "pos": {
+    "n": "noun",
+    "v": "verb",
+    "a": "adjective",
+    "ad": "adverb",
+    "prep": "preposition",
+    "conj": "conjunction",
+    "pron": "pronoun",
+    "num": "numeral",
+    "art": "article",
+    "int": "interjection"
+  }
+}

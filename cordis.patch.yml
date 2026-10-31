@@ -1,0 +1,20 @@
+# dsh-hover-dict 的 profile 补丁。
+#
+# 用 `dsh plugin add <本目录>` 安装后，dsh.bundle 会按 `./cordis.patch.yml` 把这一行
+# 插进 profile 的 cordis.yml：
+#   - id: hover-dict
+#     name: 'dsh-hover-dict'
+#
+# 这里不写 config：所有可配置项都有默认值（见 index.js 的 Config），用户想改时
+# 在 profile 的 cordis.patch.yml 里按 `- id: hover-dict` 覆盖即可，不要在这里固定。
+# 一旦在这里写死 config，用户覆盖就得连这里一起改，而且上游删行后静默失效。
+#
+# 为什么 id 用 `hover-dict` 而不是包名：Loader 的 id 是行标识，包名另写。
+# 短 id 便于在 patch 里按 `- id: hover-dict` 定位，也不与包名重复。
+#
+# 为什么只有一行、没有 client 相关条目：浏览器半不需要单独的 Loader 行。
+# package.json 的 `dsh.client` 声明之后，client-modules 会自己扫描到本包并把
+# `exports["./client"]` 作为一条 row 挂进 __DSH_BOOT__。多写一行反而会重复注册。
+- insert:
+    - id: hover-dict
+      name: 'dsh-hover-dict'

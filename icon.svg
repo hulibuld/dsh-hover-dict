@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 24 24"
+     fill="none" stroke="currentColor" stroke-width="1.7"
+     stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="Hover dictionary">
+  <title>Hover dictionary</title>
+  <!-- 书页：右边一条开口，暗示是"正在读的正文" -->
+  <path d="M4 5.2c2.2-.7 4.4-.5 6.4.7v12.4c-2-1.2-4.2-1.4-6.4-.7z"/>
+  <!-- 鼠标指针压在页面上，尖端落在一个词上 -->
+  <path d="M13.6 8.4l5.6 5.6-2.9.5-.6 2.9z"/>
+  <!-- 被查的那个词：指针正下方一小段下划线 -->
+  <path d="M10.6 15.6h2.4"/>
+  <!-- 释义气泡的三条线 -->
+  <path d="M10.8 18.4h4.8M10.8 20.4h3.2"/>
+</svg>

@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "builtAt": "2026-10-30T10:42:50.011Z",
+  "entries": 20499,
+  "examples": 8960,
+  "sources": [
+    "ECDICT",
+    "Tatoeba"
+  ],
+  "licenses": {
+    "ecdict": "MIT",
+    "tatoeba": "CC-BY-2.0-FR"
+  },
+  "corpus": {
+    "pairs": 77584,
+    "tier": "zh5 en1/70 f2000 ex2",
+    "zhSenseCap": 5,
+    "enDefCap": 1,
+    "enDefFrqMax": 2000,
+    "exMax": 2
+  }
+}
