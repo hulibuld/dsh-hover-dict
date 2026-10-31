@@ -509,8 +509,7 @@ const PANEL_CSS = `
 .hdp-root {
   display: flex;
   flex-direction: column;
-  height: 100%;
-  min-height: 0;
+  gap: 0;
   color: var(--dsw-alias-label-primary, inherit);
   font-size: 13px;
 }
@@ -524,15 +523,12 @@ const PANEL_CSS = `
 .hdp-title { font-weight: 600; font-size: 14px; }
 .hdp-sub { color: var(--dsw-alias-label-tertiary, #888); font-size: 12px; }
 .hdp-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 12px 16px 20px;
+  padding: 14px 0 8px;
 }
 .hdp-tabs {
   display: flex;
   gap: 4px;
-  padding: 8px 16px 0;
+  padding: 0 0 4px;
   border-bottom: .5px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2));
 }
 .hdp-tab {
@@ -717,10 +713,6 @@ export function DictionaryPanel(props) {
   }
 
   return h('div', { className: 'hdp-root' }, [
-    h('div', { key: 'head', className: 'hdp-head' }, [
-      h('span', { key: 't', className: 'hdp-title' }, '英语翻译'),
-      h('span', { key: 's', className: 'hdp-sub' }, '点选查词 · 生词本'),
-    ]),
     h('div', { key: 'tabs', className: 'hdp-tabs' }, tabs),
     h('div', { key: 'body', className: 'hdp-body' }, body),
   ])

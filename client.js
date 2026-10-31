@@ -3369,8 +3369,7 @@ window.__ModuleLoader__.load({
     .hdp-root {
       display: flex;
       flex-direction: column;
-      height: 100%;
-      min-height: 0;
+      gap: 0;
       color: var(--dsw-alias-label-primary, inherit);
       font-size: 13px;
     }
@@ -3384,15 +3383,12 @@ window.__ModuleLoader__.load({
     .hdp-title { font-weight: 600; font-size: 14px; }
     .hdp-sub { color: var(--dsw-alias-label-tertiary, #888); font-size: 12px; }
     .hdp-body {
-      flex: 1;
-      min-height: 0;
-      overflow: auto;
-      padding: 12px 16px 20px;
+      padding: 14px 0 8px;
     }
     .hdp-tabs {
       display: flex;
       gap: 4px;
-      padding: 8px 16px 0;
+      padding: 0 0 4px;
       border-bottom: .5px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2));
     }
     .hdp-tab {
@@ -3577,10 +3573,6 @@ window.__ModuleLoader__.load({
       }
 
       return h('div', { className: 'hdp-root' }, [
-        h('div', { key: 'head', className: 'hdp-head' }, [
-          h('span', { key: 't', className: 'hdp-title' }, '英语翻译'),
-          h('span', { key: 's', className: 'hdp-sub' }, '点选查词 · 生词本'),
-        ]),
         h('div', { key: 'tabs', className: 'hdp-tabs' }, tabs),
         h('div', { key: 'body', className: 'hdp-body' }, body),
       ])
@@ -3884,7 +3876,7 @@ window.__ModuleLoader__.load({
       var { wordAt, normalizeKey } = __mod_word
       var { createWordbook } = __mod_wordbook
       var { familyOf } = __mod_family
-      var { DictionaryPanel, ensurePanelStyle, ensureSettingsStyle, PanelIcon, readTranslator, SettingsPanel } = __mod_settings
+      var { DictionaryPanel, ensurePanelStyle, readTranslator } = __mod_settings
 /**
  * app.js —— 状态机与 slot 注册。整个浏览器半唯一的 apply / inject 出口。
  *
@@ -3896,8 +3888,8 @@ window.__ModuleLoader__.load({
  */
 
 
-/** 侧边栏面板的 id。图标与主面板靠它配对，改名等于让用户的图标点不开。 */
-    const PANEL_ID = 'hover-dict'
+/** 设置页里那个导航项的稳定键。改它等于让用户已记住的入口位置失效。 */
+    const SETTINGS_SECTION_ID = 'hover-dict'
 
 /** 覆盖层根节点的属性名，供「点自己身上不算点外面」用。 */
     const SELF_SELECTOR = `[${UI_ATTR}]`
@@ -4552,54 +4544,35 @@ window.__ModuleLoader__.load({
 
         dispose.push(slots.inject('shell.overlay', register))
 
-    // 设置面板：注册到插件详情页（key 必须是包名）
-        try {
-          const disposeSettingsStyle = ensureSettingsStyle(doc)
-          dispose.push(disposeSettingsStyle)
-          dispose.push(slots.inject('plugins.bundle.config', () => slots.register({
-            name: 'plugins.bundle.config',
-            key: 'dsh-hover-dict',
-        // wordbook 要懒取：注册发生时它可能还没建好（setupWordbook 是异步的）。
-        // 直接写 `wordbook: runtime.wordbook` 会把那一次的 null 固化下来。
-            inject: () => ({
-              get wordbook() { return runtime.wordbook },
-              apiPrefix: '/api/dsh-hover-dict',
-            }),
-          }, SettingsPanel)))
-        } catch (error) {
-      // 这个版本的宿主可能没有插件详情页，不是错误
-          warn('设置面板挂载失败（不影响查词）', error)
-        }
-
-    // 侧边栏面板：左侧那排图标里加一个，点开就是生词本 + 设置。
+    // 设置页：注册到设置面板左侧导航（和你看到的「通用设置 / 模型 / 费用」并列）。
     //
-    // 两处注册必须配对：`main` 用 keyed 插槽（key = 图标 id），
-    // `sidebar.panellist` 用 list 插槽（id = 同一个值）。
-    // 只登记宿主认的字段 —— 严格校验的宿主会因多余字段抛错，
-    // 而 apply 一抛错整条 slot 就静默退役（图标直接不出现）。
+    // 只做**一个**入口。之前同时挂了插件详情页和左侧边栏图标，等于三个地方都能进，
+    // 反而找不到。现在只留设置里这一处。
+    //
+    // `settings.section` 是 list 插槽：id 是导航项的稳定键，label 是显示文字，
+    // order 决定排在哪儿。只登记这三个字段 —— 严格校验的宿主会因多余字段抛错，
+    // 而 apply 一抛错整条 slot 就静默退役（导航项直接不出现）。
         try {
           dispose.push(ensurePanelStyle(doc))
 
-          const panelProps = () => ({
+      // wordbook 与 dict 都要懒取：注册发生时它们可能还没建好
+      // （setupWordbook 是异步的，dict 要等词库加载完）。
+      // 直接写 `wordbook: runtime.wordbook` 会把那一次的 null 固化下来。
+          const settingsProps = () => ({
             get wordbook() { return runtime.wordbook },
             get dict() { return runtime.dict },
+            apiPrefix: '/api/dsh-hover-dict',
           })
 
-          dispose.push(slots.inject('main', () => slots.register({
-            name: 'main',
-            key: PANEL_ID,
-            inject: panelProps,
-          }, DictionaryPanel)))
-
-          dispose.push(slots.inject('sidebar.panellist', () => slots.register({
-            name: 'sidebar.panellist',
-            id: PANEL_ID,
-            order: 40,
+          dispose.push(slots.inject('settings.section', () => slots.register({
+            name: 'settings.section',
+            id: SETTINGS_SECTION_ID,
+            order: 26,
             label: () => '英语翻译',
-            inject: panelProps,
-          }, PanelIcon)))
+            inject: settingsProps,
+          }, DictionaryPanel)))
         } catch (error) {
-          warn('侧边栏面板挂载失败（不影响查词）', error)
+          warn('设置页挂载失败（不影响查词）', error)
         }
 
     /** 载入词根数据。拿不到就不显示这一块，不影响查词。 */
