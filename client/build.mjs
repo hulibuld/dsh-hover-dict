@@ -51,6 +51,8 @@ const MODULES = [
   'anchor.js',
   'position.js',
   'overlay.js',
+  'drag.js',
+  'ui.js',
   'settings.js',
   'card.js',
   'app.js',

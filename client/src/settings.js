@@ -12,6 +12,7 @@
  */
 
 import { loadUx, saveUx, DEFAULT_TIMING } from './config.js'
+import { makePrimitives } from './ui.js'
 import { parseImportText } from './wordbook.js'
 
 /** 设置面板的样式。 */
@@ -23,47 +24,133 @@ const CSS = `
    卡片带拉丝细纹底与外投影。昼夜由宿主切换，这里不写死颜色。
    ═══════════════════════════════════════════════════════════════════════ */
 
-.hds-root {
+/** 字号标度：三档，不再散成五档 */
+.hds-page {
   --ease-instrument: cubic-bezier(.16,1,.3,1);
   --ease-settle: cubic-bezier(.34,1.4,.4,1);
+  --fs-title: 15px;
+  --fs-body: 13px;
+  --fs-small: 11.5px;
   display: flex;
   flex-direction: column;
-  gap: 30px;
-  max-width: 860px;
-  padding: 4px 0 28px;
-  font-size: 13.5px;
-  line-height: 1.78;
-  color: var(--dsw-alias-label-primary);
+  gap: 22px;
+  max-width: 820px;
+  /* 不通栏贴左：宽屏下居中，两侧留白 */
+  margin-inline: auto;
+  width: 100%;
+  padding: 4px 0 32px;
+  font-size: var(--fs-body);
+  line-height: 1.8;
+  color: var(--dsw-alias-label-primary, #1a1a1a);
   -webkit-font-smoothing: antialiased;
 }
-.hds-root * { box-sizing: border-box; }
+.hds-page * { box-sizing: border-box; }
 
-/* ── 区块 ────────────────────────────────────────────────────────────── */
-.hds-section { display: flex; flex-direction: column; gap: 18px; }
+/* ── 页面头 ──────────────────────────────────────────────────────────── */
+.hds-header {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 2px 2px 20px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+}
+.hds-header-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.hds-header-icon { font-size: 20px; line-height: 1; }
+.hds-header-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 680;
+  letter-spacing: -.3px;
+  line-height: 1.4;
+}
+.hds-header-desc {
+  margin: 0;
+  max-width: 58ch;
+  font-size: var(--fs-body);
+  line-height: 1.85;
+  color: var(--dsw-alias-label-secondary, #5c5c5c);
+}
+.hds-header-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+.hds-stat-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  padding: 4px 11px;
+  border-radius: 999px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+  background: var(--dsw-alias-bg-layer-1, #f7f7f8);
+  font-size: var(--fs-small);
+  line-height: 1.7;
+  color: var(--dsw-alias-label-secondary, #5c5c5c);
+}
+.hds-stat-chip b {
+  font-size: 12.5px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+  color: var(--dsw-alias-label-primary, #1a1a1a);
+}
+
+.hds-root {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ── 分区：一张卡片 ──────────────────────────────────────────────────── */
+.hds-section {
+  display: flex;
+  flex-direction: column;
+  border-radius: 14px;
+  border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+  background:
+    repeating-linear-gradient(115deg, rgb(255 255 255 / 4%) 0 1px, transparent 1px 2.5px) padding-box,
+    var(--dsw-alias-bg-layer-2, #ffffff);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
+  overflow: hidden;
+}
 
 .hds-head {
   display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 10px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.16));
+  flex-direction: column;
+  gap: 5px;
+  padding: 15px 18px 13px;
+  border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 60%, transparent);
 }
 
 .hds-title {
-  font-size: 14px;
+  margin: 0;
+  font-size: var(--fs-title);
   font-weight: 680;
-  letter-spacing: -.2px;
+  letter-spacing: -.15px;
   line-height: 1.5;
 }
 
-.hds-hint {
-  font-size: 12px;
-  line-height: 1.85;
-  color: var(--dsw-alias-label-tertiary);
+.hds-subtitle {
+  margin: 0;
+  font-size: var(--fs-body);
+  font-weight: 650;
+  line-height: 1.6;
+  color: var(--dsw-alias-label-primary, #1a1a1a);
 }
 
-.hds-stack { display: flex; flex-direction: column; gap: 14px; }
+.hds-hint {
+  margin: 0;
+  font-size: var(--fs-small);
+  line-height: 1.9;
+  color: var(--dsw-alias-label-secondary, #5c5c5c);
+}
+
+.hds-stack { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px 18px; }
 .hds-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 /* 一行设置：标签在上、控件在下，留足垂直空间 */
@@ -76,7 +163,7 @@ const CSS = `
 .hds-field > .hds-label {
   font-size: 12.5px;
   line-height: 1.7;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--dsw-alias-label-secondary, #5c5c5c);
 }
 
 /* ── 按钮 ────────────────────────────────────────────────────────────── */
@@ -90,10 +177,10 @@ const CSS = `
   min-height: 32px;
   padding: 6px 16px;
   border-radius: 9px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  background: color-mix(in srgb, var(--dsw-alias-bg-layer-3) 84%, transparent);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-2, #ffffff) 84%, transparent);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%);
-  color: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-primary, #1a1a1a);
   font: inherit;
   font-size: 12.5px;
   font-weight: 580;
@@ -125,8 +212,8 @@ const CSS = `
 
 .hds-btn:hover:not(:disabled) {
   transform: translateY(-1px);
-  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 62%, var(--dsw-alias-border-l2));
-  background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 7%, var(--dsw-alias-bg-layer-3));
+  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 62%, var(--dsw-alias-border-l2, rgba(0,0,0,.18)));
+  background: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 7%, var(--dsw-alias-bg-layer-2, #ffffff));
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%);
 }
 
@@ -138,7 +225,7 @@ const CSS = `
 }
 
 .hds-btn:focus-visible {
-  outline: 2px solid var(--dsw-alias-state-business-primary);
+  outline: 2px solid var(--dsw-alias-brand-primary, #4d6bfe);
   outline-offset: 2px;
 }
 
@@ -147,17 +234,17 @@ const CSS = `
 
 .hds-btn-primary {
   background: linear-gradient(180deg,
-    color-mix(in srgb, var(--dsw-alias-state-business-primary) 88%, #fff),
-    var(--dsw-alias-state-business-primary));
-  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 82%, #000);
-  color: var(--dsw-alias-label-on-accent, #fff);
+    color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 88%, #fff),
+    var(--dsw-alias-brand-primary, #4d6bfe));
+  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 82%, #000);
+  color: var(--dsw-alias-label-primary, #fff);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%),
               inset 0 -10px 18px -12px rgb(0 0 0 / 24%);
 }
 .hds-btn-primary:hover:not(:disabled) {
   background: linear-gradient(180deg,
-    var(--dsw-alias-state-business-primary),
-    color-mix(in srgb, var(--dsw-alias-state-business-primary) 88%, #000));
+    var(--dsw-alias-brand-primary, #4d6bfe),
+    color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 88%, #000));
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 26%),
               inset 0 -10px 18px -12px rgb(0 0 0 / 18%);
 }
@@ -166,22 +253,22 @@ const CSS = `
   background: transparent;
   border-color: transparent;
   box-shadow: none;
-  color: var(--dsw-alias-label-secondary);
+  color: var(--dsw-alias-label-secondary, #5c5c5c);
 }
 .hds-btn-ghost:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 80%, transparent);
-  border-color: var(--dsw-alias-border-l1);
-  color: var(--dsw-alias-label-primary);
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 80%, transparent);
+  border-color: var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+  color: var(--dsw-alias-label-primary, #1a1a1a);
 }
 .hds-btn-ghost::after { content: none; }
 
 .hds-btn-danger {
-  border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 55%, var(--dsw-alias-border-l2));
-  color: var(--dsw-alias-state-error-primary);
+  border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 55%, var(--dsw-alias-border-l2, rgba(0,0,0,.18)));
+  color: var(--dsw-alias-state-error-primary, #e5484d);
 }
 .hds-btn-danger:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, var(--dsw-alias-bg-layer-3));
-  border-color: var(--dsw-alias-state-error-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 8%, var(--dsw-alias-bg-layer-2, #ffffff));
+  border-color: var(--dsw-alias-state-error-primary, #e5484d);
 }
 
 .hds-btn-sm { min-height: 28px; padding: 4px 12px; font-size: 11.5px; border-radius: 7px; }
@@ -192,23 +279,23 @@ const CSS = `
   font-size: 13px;
   padding: 8px 12px;
   border-radius: 9px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-1, #f7f7f8);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%),
               inset 0 2px 6px -2px rgb(0 0 0 / 10%);
-  color: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-primary, #1a1a1a);
   min-width: 0;
   transition: border-color .18s var(--ease-instrument), box-shadow .2s var(--ease-instrument);
 }
 .hds-input:hover, .hds-select:hover {
-  border-color: color-mix(in srgb, var(--dsw-alias-border-l2) 55%, var(--dsw-alias-state-business-primary));
+  border-color: color-mix(in srgb, var(--dsw-alias-border-l2, rgba(0,0,0,.18)) 55%, var(--dsw-alias-brand-primary, #4d6bfe));
 }
 .hds-input:focus, .hds-select:focus {
   outline: none;
-  border-color: var(--dsw-alias-state-business-primary);
+  border-color: var(--dsw-alias-brand-primary, #4d6bfe);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%),
               inset 0 2px 6px -2px rgb(0 0 0 / 8%),
-              0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);
+              0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 16%, transparent);
 }
 .hds-input[type="number"] { max-width: 110px; }
 
@@ -220,19 +307,19 @@ const CSS = `
   line-height: 1.85;
   padding: 12px 14px;
   border-radius: 9px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-1, #f7f7f8);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%),
               inset 0 2px 6px -2px rgb(0 0 0 / 10%);
-  color: var(--dsw-alias-label-primary);
+  color: var(--dsw-alias-label-primary, #1a1a1a);
   resize: vertical;
   transition: border-color .18s var(--ease-instrument), box-shadow .2s var(--ease-instrument);
 }
 .hds-textarea:focus {
   outline: none;
-  border-color: var(--dsw-alias-state-business-primary);
+  border-color: var(--dsw-alias-brand-primary, #4d6bfe);
   box-shadow: inset 0 2px 6px -2px rgb(0 0 0 / 8%),
-              0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);
+              0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 16%, transparent);
 }
 
 /* ── 开关：spring 滑块 ───────────────────────────────────────────────── */
@@ -255,8 +342,8 @@ const CSS = `
   width: 38px;
   height: 21px;
   border-radius: 999px;
-  background: var(--dsw-alias-bg-layer-1);
-  border: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-1, #f7f7f8);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
   box-shadow: inset 0 1px 3px rgb(0 0 0 / 10%), inset 0 -1px 0 rgb(255 255 255 / 4%);
   position: relative;
   flex: none;
@@ -271,7 +358,7 @@ const CSS = `
   top: 2px; left: 2px;
   width: 15px; height: 15px;
   border-radius: 50%;
-  background: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-label-primary, #1a1a1a);
   box-shadow: 0 1px 3px rgb(0 0 0 / 28%), inset 0 1px 0 rgb(255 255 255 / 20%);
   transition: transform .28s var(--ease-settle),
               background .2s var(--ease-instrument),
@@ -281,19 +368,19 @@ const CSS = `
 .hds-switch:active .hds-switch-track::after { width: 18px; }
 
 .hds-switch[aria-checked="true"] .hds-switch-track {
-  background: var(--dsw-alias-state-business-primary);
-  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 85%, #000);
+  background: var(--dsw-alias-brand-primary, #4d6bfe);
+  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 85%, #000);
   box-shadow: inset 0 1px 3px rgb(0 0 0 / 14%), inset 0 -1px 0 rgb(255 255 255 / 8%);
 }
 .hds-switch[aria-checked="true"] .hds-switch-track::after {
   transform: translateX(17px);
-  background: var(--dsw-alias-label-on-accent, #fff);
+  background: var(--dsw-alias-label-primary, #fff);
 }
 .hds-switch[aria-checked="true"]:active .hds-switch-track::after {
   transform: translateX(14px);
 }
 .hds-switch:focus-visible .hds-switch-track {
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 22%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 22%, transparent);
 }
 
 .hds-switch-text { font-size: 13px; line-height: 1.7; }
@@ -307,11 +394,11 @@ const CSS = `
   gap: 14px;
   padding: 13px 15px;
   border-radius: 13px;
-  border: 1px solid var(--dsw-alias-border-l2);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
   /* 拉丝细纹垫底：从边缘隐约透出，不做成显眼图案 */
   background:
     repeating-linear-gradient(115deg, rgb(255 255 255 / 4.5%) 0 1px, transparent 1px 2.5px) padding-box,
-    color-mix(in srgb, var(--dsw-alias-bg-layer-3) 84%, transparent);
+    color-mix(in srgb, var(--dsw-alias-bg-layer-2, #ffffff) 84%, transparent);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%),
               inset 0 -12px 24px -16px rgb(0 0 0 / 14%);
   transition: transform .22s var(--ease-instrument),
@@ -321,7 +408,7 @@ const CSS = `
 
 .hds-card:hover {
   transform: translateY(-1px);
-  border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 58%, var(--dsw-alias-border-l2));
+  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 58%, var(--dsw-alias-border-l2, rgba(0,0,0,.18)));
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 11%),
               inset 0 -12px 24px -16px rgb(0 0 0 / 10%);
 }
@@ -341,7 +428,7 @@ const CSS = `
 .hds-card-meta {
   font-size: 12px;
   line-height: 1.85;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary, #5c5c5c);
 }
 
 .hds-badge {
@@ -356,12 +443,12 @@ const CSS = `
   white-space: nowrap;
 }
 .hds-badge-builtin {
-  color: var(--dsw-alias-label-tertiary);
-  border-color: var(--dsw-alias-border-l2);
+  color: var(--dsw-alias-label-secondary, #5c5c5c);
+  border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.18));
 }
 .hds-badge-on {
-  color: var(--dsw-alias-state-success-primary);
-  border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent);
+  color: var(--dsw-alias-state-success-primary, #2f9e44);
+  border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 45%, transparent);
 }
 
 /* ── 生词本 chips ────────────────────────────────────────────────────── */
@@ -376,7 +463,7 @@ const CSS = `
 .hds-chips::-webkit-scrollbar { width: 10px; height: 10px; }
 .hds-chips::-webkit-scrollbar-track { background: transparent; }
 .hds-chips::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 32%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-label-secondary, #5c5c5c) 32%, transparent);
   border-radius: 5px;
 }
 
@@ -386,14 +473,14 @@ const CSS = `
   gap: 4px;
   padding: 4px 6px 4px 12px;
   border-radius: 999px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  background: var(--dsw-alias-bg-layer-1);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: var(--dsw-alias-bg-layer-1, #f7f7f8);
   font-size: 12.5px;
   line-height: 1.7;
   transition: border-color .18s var(--ease-instrument), background .18s var(--ease-instrument);
 }
 .hds-chip:hover {
-  border-color: color-mix(in srgb, var(--dsw-alias-border-l2) 55%, var(--dsw-alias-state-business-primary));
+  border-color: color-mix(in srgb, var(--dsw-alias-border-l2, rgba(0,0,0,.18)) 55%, var(--dsw-alias-brand-primary, #4d6bfe));
 }
 
 .hds-chip-x {
@@ -404,7 +491,7 @@ const CSS = `
   border: none;
   border-radius: 50%;
   background: none;
-  color: var(--dsw-alias-label-tertiary);
+  color: var(--dsw-alias-label-secondary, #5c5c5c);
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
@@ -412,8 +499,8 @@ const CSS = `
   transition: background .16s ease, color .16s ease;
 }
 .hds-chip-x:hover {
-  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, transparent);
-  color: var(--dsw-alias-state-error-primary);
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 14%, transparent);
+  color: var(--dsw-alias-state-error-primary, #e5484d);
 }
 
 /* ── 提示条 ──────────────────────────────────────────────────────────── */
@@ -427,17 +514,17 @@ const CSS = `
   line-height: 1.8;
 }
 .hds-note-ok {
-  border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent);
-  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 9%, transparent);
+  border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 45%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 9%, transparent);
 }
 .hds-note-err {
-  border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);
-  background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 9%, transparent);
+  border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 45%, transparent);
+  background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 9%, transparent);
 }
 .hds-note-info {
-  border-color: var(--dsw-alias-border-l1);
-  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 70%, transparent);
-  color: var(--dsw-alias-label-secondary);
+  border-color: var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 70%, transparent);
+  color: var(--dsw-alias-label-secondary, #5c5c5c);
 }
 
 .hds-stat { font-variant-numeric: tabular-nums; font-weight: 600; }
@@ -448,9 +535,9 @@ const CSS = `
   line-height: 1.9;
   padding: 8px 12px;
   border-radius: 8px;
-  border: 1px dashed var(--dsw-alias-border-l2);
-  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 60%, transparent);
-  color: var(--dsw-alias-label-tertiary);
+  border: 1px dashed var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+  background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 60%, transparent);
+  color: var(--dsw-alias-label-secondary, #5c5c5c);
   user-select: all;
 }
 
@@ -469,6 +556,9 @@ const CSS = `
  * @param {object} props 宿主注入的 PropsRuntime，含 view 与 form
  * @returns {import('react').ReactElement | null}
  */
+/** 生词本一次最多渲染多少个 chip。超出的用一句「还有 N 个」交代，不静默截断。 */
+const CHIP_LIMIT = 120
+
 export function SettingsPanel(props) {
   // 只有当宿主**明确**说这是 summary 视图时才走摘要分支。
   // 不能写成 `view !== 'page'`：宿主在某些版本里可能根本不传 view，
@@ -485,6 +575,7 @@ export function SettingsPanel(props) {
   const [busy, setBusy] = useState('')
   const [dictInfo, setDictInfo] = useState(null)
   const [packs, setPacks] = useState(() => readPacks(storage))
+  const [clearPending, setClearPending] = useState(false)
 
   const book = props?.wordbook
   const apiPrefix = props?.apiPrefix ?? '/api/dsh-hover-dict'
@@ -535,11 +626,22 @@ export function SettingsPanel(props) {
     } catch { say('导出失败', 'err') }
   }
 
+  /**
+   * 清空生词本。
+   *
+   * 用内联二次确认，不用原生对话框 —— 系统弹窗会打断页面观感，
+   * 而且在设置页里弹一个原生弹窗像出错了。
+   */
   const onClear = () => {
     if (!book) return
     const total = book.size()
     if (total === 0) { say('生词本已经是空的', 'info'); return }
-    if (!window.confirm(`确定清空 ${total} 个生词？这个操作不能撤销。`)) return
+    if (!clearPending) {
+      setClearPending(true)
+      say(`再点一次「确认清空」会删掉 ${total} 个生词，这个操作不能撤销。`, 'info')
+      return
+    }
+    setClearPending(false)
     setBusy('clear')
     Promise.all(book.list().map((item) => book.remove(item.head))).then(() => {
       setBusy('')
@@ -563,101 +665,111 @@ export function SettingsPanel(props) {
   const bookSize = book?.size?.() ?? 0
   const bookWords = book?.list?.() ?? []
 
-  /* ── 区块头 ── */
-  const section = (key, title, hint, children) => h('div', { key, className: 'hds-section' }, [
-    h('div', { key: 'head', className: 'hds-head' }, [
-      h('div', { key: 't', className: 'hds-title' }, title),
-      hint ? h('div', { key: 'h', className: 'hds-hint' }, hint) : null,
-    ]),
-    h('div', { key: 'body', className: 'hds-stack' }, children),
-  ])
+  /* ── 用共用原语组装 ── */
+  const P = makePrimitives(h)
+  const { Card, Button, Switch, Input, Select, Badge, Note, Field, PageHeader, Page, GAP, C, FS } = P
 
-  /* ── 一行设置 ── */
-  const field = (key, label, control) => h('div', { key, className: 'hds-field' }, [
-    h('span', { key: 'l', className: 'hds-label' }, label),
-    h('div', { key: 'c', className: 'hds-row' }, control),
-  ])
+  const section = (key, title, hint, children, action) => h(Card, {
+    key,
+    title,
+    hint,
+    action,
+  }, children)
 
-  return h('div', { className: 'hds-root' }, [
+  const field = (key, label, control, hint) => h(Field, { key, label, hint }, control)
+
+  return h(Page, null, [
+    h(PageHeader, {
+      key: 'hdr',
+      title: '英语翻译',
+      desc: '在对话里点击或划选英文单词看释义，划选纯英文句子翻成中文。生词本会自动高亮你已经背过的词。',
+      extra: [
+        h(Badge, { key: 'b', text: '离线', tone: 'success' }),
+        h(Badge, { key: 'c', text: `${(dictInfo?.entries ?? 20499).toLocaleString()} 词条`, tone: 'neutral' }),
+      ],
+    }),
 
     /* 翻译接口 */
     section('tr', '翻译接口',
-      '划选纯英文句子时用哪个服务翻译。三项都不需要额外密钥。',
+      '划选纯英文句子时用哪个服务。三项都不需要额外密钥。',
       [
-        field('f1', '翻译服务', h('select', {
-          className: 'hds-select',
+        field('f1', '翻译服务', h(Select, {
           value: translator,
-          onChange: (event) => {
-            setTranslator(event.target.value)
-            writeTranslator(storage, event.target.value)
-          },
-        },
-        h('option', { value: 'auto' }, '自动（先用 Google，失败换 Bing）'),
-        h('option', { value: 'google' }, 'Google 翻译'),
-        h('option', { value: 'bing' }, 'Bing 翻译'),
-        h('option', { value: 'off' }, '关闭句子翻译'),
-        )),
+          options: [
+            { value: 'auto', label: '自动（先用 Google，失败换 Bing）' },
+            { value: 'google', label: 'Google 翻译' },
+            { value: 'bing', label: 'Bing 翻译' },
+            { value: 'off', label: '关闭句子翻译' },
+          ],
+          onChange: (value) => { setTranslator(value); writeTranslator(storage, value) },
+        })),
       ]),
 
-    /* 词库管理 */
+    /* 词库 */
     section('packs', '词库与句子库',
-      '系统自带三个，随插件分发，完全离线。其余词库可以用下面的方式自己加。',
+      '系统自带三个，随插件分发，完全离线。其余词库可以自己加。',
       [
-        h('div', { key: 'cards', className: 'hds-cards' },
+        h('div', { key: 'cards', style: { display: 'flex', flexDirection: 'column', gap: GAP.sm } },
           WORD_PACKS.map((pack) => h('div', {
             key: pack.id,
-            className: 'hds-card',
-            'data-installed': '',
+            style: {
+              display: 'flex',
+              alignItems: 'center',
+              gap: GAP.md,
+              padding: '13px 15px',
+              borderRadius: 13,
+              border: `1px solid ${C.border2}`,
+              background: C.bg1,
+              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.07)',
+            },
           }, [
-            h('div', { key: 'm', className: 'hds-card-main' }, [
-              h('div', { key: 'n', className: 'hds-card-name' }, [
-                h('span', { key: 't' }, pack.name),
-                h('span', { key: 'b', className: 'hds-badge hds-badge-builtin' }, '系统自带'),
+            h('div', { key: 'm', style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 } }, [
+              h('div', { key: 'n', style: { display: 'flex', alignItems: 'center', gap: 8 } }, [
+                h('span', { key: 't', style: { fontSize: FS.body, fontWeight: 650, color: C.text } }, pack.name),
+                h(Badge, { key: 'b', text: '系统自带', tone: 'neutral' }),
               ]),
-              h('div', { key: 'd', className: 'hds-card-meta' }, pack.desc),
+              h('div', { key: 'd', style: { fontSize: FS.small, lineHeight: 1.85, color: C.textFaint } }, pack.desc),
             ]),
           ])),
         ),
-        h('div', { key: 'custom', className: 'hds-stack' }, [
-          h('div', { key: 't', className: 'hds-title', style: { fontSize: '13.5px' } }, '自己加词库'),
-          h('div', { key: 'h', className: 'hds-hint' },
-            '把词库文件放进下面这个目录，重启 DSH 后自动加载。'
-            + '支持 ECDICT 的 CSV（只要有 word 与 translation 两列），'
-            + '或者与 dict.dat 同构的 JSON。'),
-          h('div', { key: 'pathrow', className: 'hds-row' }, [
-            h('code', { key: 'p', className: 'hds-path' }, packsDir),
-            h('button', {
-              key: 'copy',
-              className: 'hds-btn hds-btn-sm',
-              type: 'button',
+        h('div', { key: 'custom', style: { display: 'flex', flexDirection: 'column', gap: GAP.sm } }, [
+          h('h4', { key: 't', style: { margin: 0, fontSize: FS.body, fontWeight: 650, color: C.text } }, '自己加词库'),
+          h('p', { key: 'h', style: { margin: 0, fontSize: FS.small, lineHeight: 1.9, color: C.textDim } },
+            '把词库文件放进下面这个目录，重启 DSH 后自动加载。支持 ECDICT 的 CSV（只要有 word 与 translation 两列），或者与 dict.dat 同构的 JSON。'),
+          h('div', { key: 'row', style: { display: 'flex', alignItems: 'center', gap: GAP.sm, flexWrap: 'wrap' } }, [
+            h('code', {
+              key: 'p',
+              style: {
+                flex: 1, minWidth: 200,
+                fontFamily: 'var(--ds-font-family-code, ui-monospace, monospace)',
+                fontSize: FS.small, lineHeight: 1.9,
+                padding: '8px 12px', borderRadius: 8,
+                border: `1px dashed ${C.border2}`,
+                background: C.bgBase, color: C.textFaint,
+                userSelect: 'all',
+                overflowWrap: 'anywhere',
+              },
+            }, packsDir),
+            h(Button, {
+              key: 'copy', label: '复制路径', size: 'sm',
               onClick: (event) => {
-                const btn = event.currentTarget
+                const btn = event?.currentTarget
                 const done = () => {
                   if (btn) btn.textContent = '已复制'
                   setTimeout(() => { if (btn) btn.textContent = '复制路径' }, 1400)
                 }
-                try {
-                  navigator.clipboard?.writeText(packsDir).then(done, () => {})
-                } catch { /* 剪贴板不可用就静默 */ }
+                try { navigator.clipboard?.writeText(packsDir).then(done, () => {}) } catch { /* ignore */ }
               },
-            }, '复制路径'),
-            h('button', {
-              key: 'open',
-              className: 'hds-btn hds-btn-sm',
-              type: 'button',
-              title: '在文件管理器里打开（若宿主支持）',
-              onClick: () => {
-                try {
-                  window.open(`file://${packsDir}`, '_blank')
-                } catch { /* 被拦截就算了 */ }
-              },
-            }, '打开文件夹'),
+            }),
           ]),
         ]),
-        h('div', { key: 'note', className: 'hds-note hds-note-info' },
-          `当前词库共 ${dictInfo?.entries ? dictInfo.entries.toLocaleString() : '20,499'} 个词条，`
-          + `${dictInfo?.examples ? dictInfo.examples.toLocaleString() : '8,960'} 个带双语例句，`
-          + `${dictInfo?.roots ? dictInfo.roots.toLocaleString() : '6,374'} 个带词根分析。`),
+        h(Note, {
+          key: 'note',
+          tone: 'info',
+          text: `当前 ${(dictInfo?.entries ?? 20499).toLocaleString()} 个词条 · `
+            + `${(dictInfo?.examples ?? 8960).toLocaleString()} 个带双语例句 · `
+            + `${(dictInfo?.roots ?? 6374).toLocaleString()} 个带词根分析`,
+        }),
       ]),
 
     /* 生词本 */
@@ -666,103 +778,88 @@ export function SettingsPanel(props) {
       [
         bookSize > 0
           ? h('div', { key: 'chips', className: 'hds-chips' },
-            bookWords.slice(0, 120).map((item) => h('span', { key: item.head, className: 'hds-chip' }, [
+            bookWords.slice(0, CHIP_LIMIT).map((item) => h('span', { key: item.head, className: 'hds-chip' }, [
               h('span', { key: 'w' }, item.head),
               h('button', {
-                key: 'x',
-                className: 'hds-chip-x',
-                type: 'button',
-                title: '移出',
+                key: 'x', className: 'hds-chip-x', type: 'button', title: '移出',
                 onClick: () => book.remove(item.head),
               }, '×'),
             ])),
           )
-          : h('div', { key: 'empty', className: 'hds-hint' }, '还没有生词。在对话里点开一个词，点标题旁边的 ☆ 就能收进来。'),
+          : h('p', { key: 'empty', style: { margin: 0, fontSize: FS.small, lineHeight: 1.85, color: C.textFaint } },
+            '还没有生词。在对话里点开一个词，点标题旁边的 ☆ 就能收进来。'),
 
-        h('textarea', {
+        bookSize > CHIP_LIMIT
+          ? h('p', { key: 'more', style: { margin: 0, fontSize: FS.small, color: C.textFaint } },
+            `只显示了前 ${CHIP_LIMIT} 个，还有 ${bookSize - CHIP_LIMIT} 个。用搜索或导出来看全部。`)
+          : null,
+
+        h(Input, {
           key: 'ta',
-          className: 'hds-textarea',
-          placeholder: '粘贴单词表，一行一个。有道的导出内容可以直接贴（每行第一个词会被识别）。',
+          multiline: true,
           value: importText,
-          onChange: (event) => setImportText(event.target.value),
+          placeholder: '粘贴单词表，一行一个。有道的导出内容可以直接贴（每行第一个词会被识别）。',
+          onChange: setImportText,
         }),
 
-        h('div', { key: 'btns', className: 'hds-row' }, [
-          h('button', {
-            key: 'import',
-            className: 'hds-btn hds-btn-primary',
-            type: 'button',
-            disabled: busy === 'import' || importText.trim() === '',
+        h('div', { key: 'btns', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
+          h(Button, {
+            key: 'import', label: '导入', variant: 'primary',
+            disabled: importText.trim() === '', busy: busy === 'import',
             onClick: onImport,
-          }, busy === 'import' ? '导入中…' : '导入'),
-          h('button', {
-            key: 'export',
-            className: 'hds-btn',
-            type: 'button',
-            disabled: bookSize === 0,
-            onClick: onExport,
-          }, '导出为 txt'),
-          h('button', {
+          }),
+          h(Button, {
+            key: 'export', label: '导出为 txt',
+            disabled: bookSize === 0, onClick: onExport,
+          }),
+          h(Button, {
             key: 'clear',
-            className: 'hds-btn hds-btn-danger',
-            type: 'button',
+            label: clearPending ? '确认清空' : '清空',
+            variant: clearPending ? 'primary' : 'danger',
             disabled: busy === 'clear' || bookSize === 0,
             onClick: onClear,
-          }, '清空'),
+          }),
+          clearPending
+            ? h(Button, {
+              key: 'cancel', label: '取消', variant: 'ghost',
+              onClick: () => { setClearPending(false); setMessage(null) },
+            })
+            : null,
         ]),
       ]),
 
     /* 显示 */
     section('ui', '显示', null, [
-      field('s1', '浮层释义条数', h('input', {
-        className: 'hds-input',
-        type: 'number',
-        min: 1,
-        max: 5,
-        value: ux.appearance.maxSensesInPopover,
-        onChange: (event) => patchAppearance('maxSensesInPopover', Number(event.target.value)),
-      })),
-      field('s2', '卡片宽度', h('input', {
-        className: 'hds-input',
-        type: 'number',
-        min: 240,
-        max: 720,
-        step: 20,
-        value: ux.appearance.cardMaxWidthPx,
-        onChange: (event) => patchAppearance('cardMaxWidthPx', Number(event.target.value)),
-      })),
-      h('div', { key: 's3', className: 'hds-field' }, [
-        h('span', { key: 'l', className: 'hds-label' }, '显示考纲标签'),
-        h('button', {
-          key: 'sw',
-          className: 'hds-switch',
-          type: 'button',
-          role: 'switch',
-          'aria-checked': ux.appearance.showTags !== false ? 'true' : 'false',
-          onClick: () => patchAppearance('showTags', ux.appearance.showTags === false),
-        }, [
-          h('span', { key: 'track', className: 'hds-switch-track', 'aria-hidden': 'true' }),
-          h('span', { key: 'text', className: 'hds-switch-text' },
-            ux.appearance.showTags !== false ? '显示' : '隐藏'),
-        ]),
-      ]),
+      field('s1', '浮层释义条数',
+        h(Input, {
+          type: 'number', value: String(ux.appearance.maxSensesInPopover),
+          onChange: (v) => patchAppearance('maxSensesInPopover', Number(v)),
+          style: { maxWidth: 110 },
+        })),
+      field('s2', '卡片宽度',
+        h(Input, {
+          type: 'number', value: String(ux.appearance.cardMaxWidthPx),
+          onChange: (v) => patchAppearance('cardMaxWidthPx', Number(v)),
+          style: { maxWidth: 130 },
+        })),
+      field('s3', '显示考纲标签',
+        h(Switch, {
+          checked: ux.appearance.showTags !== false,
+          onChange: (next) => patchAppearance('showTags', next),
+          label: ux.appearance.showTags !== false ? '显示' : '隐藏',
+        })),
     ]),
 
     message !== null
-      ? h('div', {
+      ? h(Note, {
         key: 'msg',
-        className: `hds-note hds-note-${message.tone === 'err' ? 'err' : message.tone === 'info' ? 'info' : 'ok'}`,
-      }, message.text)
+        tone: message.tone === 'err' ? 'err' : message.tone === 'info' ? 'info' : 'ok',
+        text: message.text,
+      })
       : null,
   ])
 }
 
-/**
- * 可下载的词库包清单。
- *
- * builtin 的三个是随包分发的，不能停用。
- * 其余按需下载——装了就参与查词，没装就查不到那部分词。
- */
 export const WORD_PACKS = [
   { id: 'core', name: '核心词库', builtin: true, desc: '20,499 个考纲核心词：中考 / 高考 / 四六级 / 考研 / 托福 / 雅思 / GRE，每个词带词性、中文释义、英文释义与变音标注。' },
   { id: 'roots', name: '词根词缀库', builtin: true, desc: '6,374 个词的词根词缀拆解，来自 ECDICT 词根库（MIT）。' },
@@ -837,243 +934,4 @@ export function ensureSettingsStyle(doc) {
     node.textContent = CSS
   }
   return () => { try { node.remove() } catch { /* ignore */ } }
-}
-
-/** 侧边栏图标组件。用 currentColor，跟随主题与选中态。 */
-export function PanelIcon(props) {
-  const size = props?.size ?? 20
-  return h('svg', {
-    width: size,
-    height: size,
-    viewBox: '0 0 24 24',
-    fill: 'none',
-    stroke: 'currentColor',
-    strokeWidth: 1.7,
-    strokeLinecap: 'round',
-    strokeLinejoin: 'round',
-    role: 'img',
-    'aria-label': '字典',
-  }, [
-    h('path', { key: 'l', d: 'M12 6.4C10.2 5.2 7.9 4.9 5.4 5.6v11.2c2.5-.7 4.8-.4 6.6.8' }),
-    h('path', { key: 'r', d: 'M12 6.4c1.8-1.2 4.1-1.5 6.6-.8v11.2c-2.5-.7-4.8-.4-6.6.8' }),
-    h('path', { key: 's', d: 'M12 6.4v11.2' }),
-    h('path', { key: 'a1', d: 'M8.2 13.6l1.5-3.4 1.5 3.4' }),
-    h('path', { key: 'a2', d: 'M8.7 12.6h2' }),
-    h('path', { key: 'r1', d: 'M14.6 9.2h2.6' }),
-    h('path', { key: 'r2', d: 'M14.6 11.8h2.6' }),
-  ])
-}
-
-/** 面板页面的样式（比设置面板宽松，占满整列）。 */
-const PANEL_CSS = `
-.hdp-root {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  color: var(--dsw-alias-label-primary, inherit);
-  font-size: 13px;
-}
-.hdp-head {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  padding: 12px 16px 8px;
-  border-bottom: .5px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2));
-}
-.hdp-title { font-weight: 600; font-size: 14px; }
-.hdp-sub { color: var(--dsw-alias-label-tertiary, #888); font-size: 12px; }
-.hdp-body {
-  padding: 14px 0 8px;
-}
-.hdp-tabs {
-  display: flex;
-  gap: 4px;
-  padding: 0 0 4px;
-  border-bottom: .5px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2));
-}
-.hdp-tab {
-  padding: 6px 12px;
-  border: none;
-  background: none;
-  color: var(--dsw-alias-label-tertiary, #888);
-  font: inherit;
-  cursor: pointer;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -0.5px;
-}
-.hdp-tab:hover { color: var(--dsw-alias-label-secondary, #666); }
-.hdp-tab[data-active] {
-  color: var(--dsw-alias-label-primary, inherit);
-  border-bottom-color: var(--dsw-alias-state-business-primary, #3b82f6);
-}
-.hdp-empty {
-  color: var(--dsw-alias-label-tertiary, #888);
-  text-align: center;
-  padding: 40px 16px;
-  line-height: 1.7;
-}
-.hdp-list { display: flex; flex-direction: column; gap: 2px; }
-.hdp-item {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 10px;
-  border-radius: var(--dsw-radius-sm, 6px);
-  cursor: pointer;
-}
-.hdp-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12)); }
-.hdp-item-word { font-weight: 600; font-size: 14px; }
-.hdp-item-zh {
-  flex: 1;
-  min-width: 0;
-  color: var(--dsw-alias-label-secondary, #666);
-  font-size: 12px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.hdp-item-x {
-  border: none;
-  background: none;
-  color: var(--dsw-alias-label-tertiary, #999);
-  cursor: pointer;
-  font-size: 14px;
-  line-height: 1;
-  padding: 2px 6px;
-  border-radius: 4px;
-}
-.hdp-item-x:hover {
-  background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.16));
-  color: var(--dsw-alias-state-error-primary, #e5484d);
-}
-.hdp-search {
-  width: 100%;
-  box-sizing: border-box;
-  padding: 6px 10px;
-  margin-bottom: 8px;
-  border-radius: var(--dsw-radius-sm, 6px);
-  border: .5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3));
-  background: var(--dsw-alias-bg-base, transparent);
-  color: inherit;
-  font: inherit;
-}
-`
-
-/** 插面板样式。 */
-export function ensurePanelStyle(doc) {
-  if (!doc || typeof doc.createElement !== 'function') return () => {}
-  const id = 'dsh-hover-dict/panel.css'
-  const selector = `style[data-plugin-css=${JSON.stringify(id)}]`
-  let node = doc.querySelector(selector)
-  if (node === null) {
-    node = doc.createElement('style')
-    node.dataset.pluginCss = id
-    node.textContent = PANEL_CSS
-    const head = doc.head ?? doc.documentElement
-    if (!head) return () => {}
-    head.appendChild(node)
-  } else if (node.textContent !== PANEL_CSS) {
-    node.textContent = PANEL_CSS
-  }
-  return () => { try { node.remove() } catch { /* ignore */ } }
-}
-
-/**
- * 侧边栏面板：生词本 + 设置，一页看完。
- *
- * @param {object} props
- * @returns {import('react').ReactElement}
- */
-export function DictionaryPanel(props) {
-  const book = props?.wordbook
-  const dict = props?.dict
-  const [tab, setTab] = useState('book')
-  const [version, setVersion] = useState(0)
-  const [query, setQuery] = useState('')
-
-  // 订阅生词本变化
-  useEffect(() => {
-    if (!book || typeof book.subscribe !== 'function') return undefined
-    const off = book.subscribe(() => setVersion((n) => n + 1))
-    return () => { try { off() } catch { /* ignore */ } }
-  }, [book])
-
-  const words = book?.list?.() ?? []
-  const filtered = query.trim() === ''
-    ? words
-    : words.filter((item) => item.head.includes(query.trim().toLowerCase()))
-
-  /** 取一个词的中文简述，用于列表右侧。 */
-  const briefOfWord = (head) => {
-    if (!dict) return ''
-    const entry = dict.entries?.[head]
-    if (!Array.isArray(entry)) return ''
-    const groups = Array.isArray(entry[0]) ? entry[0] : []
-    for (const group of groups) {
-      const zh = Array.isArray(group?.[1]) ? group[1] : []
-      if (zh.length > 0) return zh.slice(0, 2).join('；')
-    }
-    return ''
-  }
-
-  const tabs = [
-    h('button', {
-      key: 'book', className: 'hdp-tab', type: 'button',
-      'data-active': tab === 'book' ? '' : undefined,
-      onClick: () => setTab('book'),
-    }, `生词本 ${words.length > 0 ? `(${words.length})` : ''}`),
-    h('button', {
-      key: 'settings', className: 'hdp-tab', type: 'button',
-      'data-active': tab === 'settings' ? '' : undefined,
-      onClick: () => setTab('settings'),
-    }, '设置'),
-  ]
-
-  const body = []
-
-  if (tab === 'book') {
-    if (words.length === 0) {
-      body.push(h('div', { key: 'empty', className: 'hdp-empty' },
-        '生词本还是空的。',
-        h('br'),
-        '在对话里点开一个词，点标题旁边那颗 ☆ 就能收进来。'))
-    } else {
-      body.push(h('input', {
-        key: 'q', className: 'hdp-search', type: 'text',
-        placeholder: `在 ${words.length} 个生词里搜…`,
-        value: query,
-        onChange: (event) => setQuery(event.target.value),
-      }))
-      body.push(h('div', { key: 'list', className: 'hdp-list' },
-        filtered.map((item) => h('div', {
-          key: item.head,
-          className: 'hdp-item',
-        },
-        h('span', { className: 'hdp-item-word' }, item.head),
-        h('span', { className: 'hdp-item-zh' }, briefOfWord(item.head)),
-        h('button', {
-          className: 'hdp-item-x', type: 'button', title: '移出',
-          onClick: (event) => {
-            event.stopPropagation()
-            book.remove(item.head)
-          },
-        }, '×'),
-        ))))
-      if (filtered.length === 0) {
-        body.push(h('div', { key: 'noresult', className: 'hdp-empty' }, '没有匹配的词'))
-      }
-    }
-  } else {
-    body.push(h(SettingsPanel, {
-      key: 'settings',
-      view: 'page',
-      wordbook: book,
-      apiPrefix: '/api/dsh-hover-dict',
-    }))
-  }
-
-  return h('div', { className: 'hdp-root' }, [
-    h('div', { key: 'tabs', className: 'hdp-tabs' }, tabs),
-    h('div', { key: 'body', className: 'hdp-body' }, body),
-  ])
 }

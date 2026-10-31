@@ -13,6 +13,8 @@
  *   client/src/anchor.js
  *   client/src/position.js
  *   client/src/overlay.js
+ *   client/src/drag.js
+ *   client/src/ui.js
  *   client/src/settings.js
  *   client/src/card.js
  *   client/src/app.js
@@ -2523,6 +2525,31 @@ window.__ModuleLoader__.load({
       flex-direction: column;
       gap: 10px;
     }
+    [${UI_ATTR}] .hd-drag-handle {
+      cursor: grab;
+      user-select: none;
+      margin: -6px -8px 0;
+      padding: 6px 8px 0;
+      border-radius: 8px 8px 0 0;
+      transition: background-color .14s ease;
+    }
+    [${UI_ATTR}] .hd-drag-handle:hover {
+      background: rgba(127,127,127,.08);
+    }
+    [${UI_ATTR}] .hd-drag-handle:active {
+      cursor: grabbing;
+      background: rgba(127,127,127,.14);
+    }
+/* 把手上的小提示：六点抓取纹，让人一眼看出这条能拖 */
+    [${UI_ATTR}] .hd-drag-handle::before {
+      content: "";
+      display: block;
+      width: 26px;
+      height: 3px;
+      margin: 0 auto 6px;
+      border-radius: 2px;
+      background: rgba(127,127,127,.36);
+    }
     [${UI_ATTR}] .hd-word-row {
       display: flex;
       align-items: center;
@@ -2536,10 +2563,10 @@ window.__ModuleLoader__.load({
       line-height: 1;
       padding: 2px 4px;
       border-radius: 4px;
-      color: var(--dsw-alias-label-tertiary, #999);
+      color: var(--dsw-alias-label-secondary, #999);
     }
     [${UI_ATTR}] .hd-star:hover {
-      background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.14));
+      background: var(--dsw-alias-bg-layer-1, rgba(127,127,127,.14));
     }
     [${UI_ATTR}] .hd-star-on {
       color: var(--dsw-alias-state-warn-primary, #f5a623);
@@ -2570,7 +2597,7 @@ window.__ModuleLoader__.load({
       font-family: var(--ds-font-family-code, monospace);
     }
     [${UI_ATTR}] .hd-root-origin {
-      color: var(--dsw-alias-label-tertiary, #999);
+      color: var(--dsw-alias-label-secondary, #999);
       font-size: .86em;
     }
     [${UI_ATTR}] .hd-word {
@@ -2585,7 +2612,7 @@ window.__ModuleLoader__.load({
     }
     [${UI_ATTR}] .hd-pos {
       flex: none;
-      color: var(--dsw-alias-label-tertiary, #888);
+      color: var(--dsw-alias-label-secondary, #888);
       font-size: .88em;
       font-style: italic;
       min-width: 2.6em;
@@ -2609,11 +2636,11 @@ window.__ModuleLoader__.load({
       white-space: nowrap;
     }
     [${UI_ATTR}] .hd-more {
-      color: var(--dsw-alias-label-tertiary, #888);
+      color: var(--dsw-alias-label-secondary, #888);
       font-size: .85em;
     }
     [${UI_ATTR}] .hd-note {
-      color: var(--dsw-alias-label-tertiary, #888);
+      color: var(--dsw-alias-label-secondary, #888);
       font-size: .88em;
       cursor: pointer;
       text-decoration: underline dotted;
@@ -2625,7 +2652,7 @@ window.__ModuleLoader__.load({
       right: 10px;
       border: none;
       background: transparent;
-      color: var(--dsw-alias-label-tertiary, #888);
+      color: var(--dsw-alias-label-secondary, #888);
       cursor: pointer;
       font-size: 15px;
       line-height: 1;
@@ -2633,10 +2660,10 @@ window.__ModuleLoader__.load({
       border-radius: 4px;
     }
     [${UI_ATTR}] .hd-close:hover {
-      background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12));
+      background: var(--dsw-alias-bg-layer-1, rgba(127,127,127,.12));
     }
     [${UI_ATTR}] .hd-section {
-      color: var(--dsw-alias-label-tertiary, #888);
+      color: var(--dsw-alias-label-secondary, #888);
       font-size: .84em;
       margin-bottom: -4px;
     }
@@ -2659,7 +2686,7 @@ window.__ModuleLoader__.load({
     }
     [${UI_ATTR}] .hd-hit {
       font-weight: 600;
-      color: var(--dsw-alias-link, inherit);
+      color: var(--dsw-alias-brand-primary, inherit);
     }
     `
 
@@ -2856,9 +2883,713 @@ window.__ModuleLoader__.load({
       return { UI_ATTR, ensureStyle, PopoverBody, StatusNote, PhraseBody }
     })()
 
+    // ═══ drag.js ═══
+    var __mod_drag = (function () {
+/**
+ * drag.js —— 让完整词条卡片能拖动。
+ *
+ * 为什么需要：卡片是就地弹在词旁边的，位置由算法算（优先下方、放不下翻上方）。
+ * 用户读到一半想对照正文时，这个位置往往正好挡住要看的地方。
+ * 能拖就意味着「我自己决定它停在哪」。
+ *
+ * 三条约束：
+ *   1. **拖动只改位置，不改尺寸**。用户拖它是为了挪开视线，不是拉伸。
+ *   2. **拖过的位置要记住**。同一个会话里再点开别的词，卡片还停在原处——
+ *      反复拖同一个位置很烦。
+ *   3. **不能拖出视口**。顶部留 8px，底部留 8px，左右同理；
+ *      拖到边上就贴住，不要让它消失。
+ *
+ * 本模块是纯函数 + 一个事件绑定，不碰 React。
+ */
+
+/** 视口内边距：卡片任何一边都不许越过这个距离。 */
+    const VIEWPORT_PAD = 8
+
+/** 拖动把手的判定：手指/鼠标移动超过这个距离才算拖，否则当点击。 */
+    const DRAG_THRESHOLD_PX = 3
+
+/**
+ * 把位置夹进视口。
+ *
+ * @param {{ top: number, left: number }} pos
+ * @param {{ width: number, height: number }} size 卡片尺寸
+ * @param {{ width: number, height: number }} viewport
+ * @returns {{ top: number, left: number }}
+ */
+    function clampToViewport(pos, size, viewport) {
+      const maxTop = Math.max(VIEWPORT_PAD, viewport.height - size.height - VIEWPORT_PAD)
+      const maxLeft = Math.max(VIEWPORT_PAD, viewport.width - size.width - VIEWPORT_PAD)
+      return {
+        top: Math.min(Math.max(pos.top, VIEWPORT_PAD), maxTop),
+        left: Math.min(Math.max(pos.left, VIEWPORT_PAD), maxLeft),
+      }
+    }
+
+/**
+ * 由「按下点」与「当前点」算出新位置。
+ *
+ * 用「起点位置 + 位移」而不是「指针位置 - 半宽」：
+ * 后者会在开始拖的瞬间让卡片跳到指针中心，手感很怪。
+ *
+ * @param {{ top: number, left: number }} origin 按下时卡片的位置
+ * @param {{ x: number, y: number }} start 按下时的指针坐标
+ * @param {{ x: number, y: number }} current 当前指针坐标
+ * @param {{ width: number, height: number }} size
+ * @param {{ width: number, height: number }} viewport
+ * @returns {{ top: number, left: number }}
+ */
+    function dragPosition(origin, start, current, size, viewport) {
+      const moved = {
+        top: origin.top + (current.y - start.y),
+        left: origin.left + (current.x - start.x),
+      }
+      return clampToViewport(moved, size, viewport)
+    }
+
+/**
+ * 把拖动行为绑到一个元素上。
+ *
+ * 只在把手元素上按下才启动拖动 —— 卡片内容里要能正常选文字、点链接。
+ *
+ * @param {object} options
+ * @param {HTMLElement} options.handle 拖动把手（通常是卡片顶部那条）
+ * @param {HTMLElement} options.panel 被拖动的卡片
+ * @param {Document} options.doc
+ * @param {{ width: number, height: number }} options.viewport
+ * @param {(pos: { top: number, left: number }) => void} [options.onEnd] 拖动结束回调
+ * @param {() => void} [options.onClick] 没拖动时当成点击（比如双击复位）
+ * @returns {() => void} 解绑函数
+ */
+    function attachDrag(options) {
+      const { handle, panel, doc } = options
+      if (!handle || !panel || !doc) return () => {}
+
+      let origin = null
+      let start = null
+      let moved = false
+
+      const onPointerDown = (event) => {
+    // 只响应主键；右键留给上下文菜单
+        if (event.button !== 0) return
+        const rect = panel.getBoundingClientRect()
+        origin = { top: rect.top, left: rect.left }
+        start = { x: event.clientX, y: event.clientY }
+        moved = false
+        handle.setPointerCapture?.(event.pointerId)
+    // 阻止拖动时选中文字
+        event.preventDefault()
+      }
+
+      const onPointerMove = (event) => {
+        if (origin === null || start === null) return
+        const dx = event.clientX - start.x
+        const dy = event.clientY - start.y
+        if (!moved && Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return
+        moved = true
+
+        const rect = panel.getBoundingClientRect()
+        const next = dragPosition(origin, start, { x: event.clientX, y: event.clientY },
+          { width: rect.width, height: rect.height }, options.viewport)
+        panel.style.top = `${next.top}px`
+        panel.style.left = `${next.left}px`
+      }
+
+      const onPointerUp = (event) => {
+        if (origin === null) return
+        const wasMoved = moved
+        origin = null
+        start = null
+        moved = false
+        handle.releasePointerCapture?.(event.pointerId)
+
+        if (!wasMoved) {
+          options.onClick?.()
+          return
+        }
+        const rect = panel.getBoundingClientRect()
+        options.onEnd?.({ top: rect.top, left: rect.left })
+      }
+
+      handle.addEventListener('pointerdown', onPointerDown)
+      doc.addEventListener('pointermove', onPointerMove)
+      doc.addEventListener('pointerup', onPointerUp)
+      doc.addEventListener('pointercancel', onPointerUp)
+
+      return () => {
+        handle.removeEventListener('pointerdown', onPointerDown)
+        doc.removeEventListener('pointermove', onPointerMove)
+        doc.removeEventListener('pointerup', onPointerUp)
+        doc.removeEventListener('pointercancel', onPointerUp)
+      }
+    }
+
+      return { VIEWPORT_PAD, DRAG_THRESHOLD_PX, clampToViewport, dragPosition, attachDrag }
+    })()
+
+    // ═══ ui.js ═══
+    var __mod_ui = (function () {
+/**
+ * ui.js —— 一套共用的设计原语。
+ *
+ * 为什么要有这个文件：设置页 `settings.section` 的宿主容器是**裸壳子**
+ * （没底色、没内边距、没圆角），所以层级只能在自己这一层造出来。
+ * 之前我把颜色、间距、字号散在各处手搓，结果：
+ *   1. 用了四个宿主根本没提供的 token（吸了 `bg-layer-3`、`label-tertiary` 等），
+ *      而 CSS 的 var() 取不到值又不给备用值时，**整条声明作废**，
+ *      按钮和输入框于是变成「没有边框的一行字」——这就是「简陋」的真正原因；
+ *   2. 字号散成 13.5 / 13 / 12.5 / 12 / 11.5 五档，没有标度。
+ *
+ * 现在的约定：
+ *   - 颜色一律走宿主给的 14 个 `--dsw-alias-*`，**每条都给备用值**；
+ *   - 字号只有三档（TITLE / BODY / SMALL）；
+ *   - 间距只有四档（GAP_XS / GAP_SM / GAP_MD / GAP_LG）；
+ *   - 所有可交互件都带 `aria-*`，键盘可达。
+ *
+ * 同一宿主槽里别的插件（例如「大肥鱼的后台」）也在手搓自己的样式。
+ * 这份原语本来就打算给两家共用：谁要用，把这个文件复制过去，
+ * 在插件入口调一次 `makePrimitives(React.createElement)` 即可。
+ *
+ * 为什么用工厂而不是直接导出组件：这份代码跑在宿主的模块表里，
+ * 拿不到顶层 import 的 React。`h` 必须由调用方在运行期注入，
+ * 所以组件在工厂里闭包生成。
+ */
+
+/* ── 字号标度：三档，不再散 ─────────────────────────────────────────── */
+    const FS = Object.freeze({
+      title: 15,
+      body: 13,
+      small: 11.5,
+    })
+
+/* ── 间距标度：四档 ─────────────────────────────────────────────────── */
+    const GAP = Object.freeze({
+      xs: 6,
+      sm: 10,
+      md: 16,
+      lg: 24,
+    })
+
+/* ── 圆角 ───────────────────────────────────────────────────────────── */
+    const RADIUS = Object.freeze({
+      sm: 7,
+      md: 10,
+      lg: 14,
+      pill: 999,
+    })
+
+/**
+ * 主题色。
+ *
+ * 键名与宿主 token 一一对应，**值里已经带好备用值**——调用方直接拿去当
+ * style 用，不要再自己写一遍 var()。备用值取的是深色主题下能看的半透明白，
+ * 宿主 token 在就优先用 token。
+ */
+    const C = Object.freeze({
+      text: 'var(--dsw-alias-label-primary, #e8e8e8)',
+      textDim: 'var(--dsw-alias-label-secondary, rgba(255,255,255,0.66))',
+      textFaint: 'var(--dsw-alias-label-secondary, rgba(255,255,255,0.48))',
+      bgBase: 'var(--dsw-alias-bg-base, rgba(255,255,255,0.03))',
+      bg1: 'var(--dsw-alias-bg-layer-1, rgba(255,255,255,0.06))',
+      bg2: 'var(--dsw-alias-bg-layer-2, rgba(255,255,255,0.09))',
+      overlay: 'var(--dsw-alias-bg-overlay, rgba(255,255,255,0.10))',
+      border1: 'var(--dsw-alias-border-l1, rgba(255,255,255,0.12))',
+      border2: 'var(--dsw-alias-border-l2, rgba(255,255,255,0.20))',
+      accent: 'var(--dsw-alias-brand-primary, #4d6bfe)',
+      danger: 'var(--dsw-alias-state-error-primary, #e5484d)',
+      success: 'var(--dsw-alias-state-success-primary, #2f9e44)',
+      warn: 'var(--dsw-alias-state-warn-primary, #f0a441)',
+      idle: 'var(--dsw-alias-state-idle-primary, rgba(255,255,255,0.4))',
+    })
+
+/* ── 动效曲线 ───────────────────────────────────────────────────────── */
+    const EASE = Object.freeze({
+  /** 快出缓停：适合位移与展开 */
+      out: 'cubic-bezier(.16,1,.3,1)',
+  /** 轻微过冲：适合开关与按下回弹 */
+      settle: 'cubic-bezier(.34,1.4,.4,1)',
+    })
+
+/**
+ * 把若干 style 对象合成一个，过滤掉假值。
+ *
+ * 不用 Object.assign 是因为调用点常常是 `[base, cond && extra]` 这种，
+ * 里面会有 false / null / undefined。
+ *
+ * @param {...(object|false|null|undefined)} parts
+ * @returns {object}
+ */
+    function sx(...parts) {
+      const out = {}
+      for (const part of parts) {
+        if (!part || typeof part !== 'object') continue
+        for (const [key, value] of Object.entries(part)) {
+          if (value !== undefined && value !== null && value !== false) out[key] = value
+        }
+      }
+      return out
+    }
+
+/** 一段说明文字。 */
+    function hintStyle() {
+      return {
+        margin: 0,
+        fontSize: FS.small,
+        lineHeight: 1.85,
+        color: C.textDim,
+      }
+    }
+
+/**
+ * 分区卡。
+ *
+ * 宿主给的容器是裸的，所以每块内容自己带一张卡片：
+ * 细边框 + 分层底色 + 顶部内高光 + 圆角。
+ *
+ * @param {object} props
+ * @param {string} props.title
+ * @param {string} [props.hint]
+ * @param {import('react').ReactNode} [props.action] 标题右侧的操作区
+ * @param {import('react').ReactNode} props.children
+ * @returns {import('react').ReactElement}
+ */
+      function Card(props) {
+      return h('section', {
+        style: {
+          display: 'flex',
+          flexDirection: 'column',
+          borderRadius: RADIUS.lg,
+          border: `1px solid ${C.border1}`,
+          background: C.bg2,
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.07)',
+          overflow: 'hidden',
+        },
+        'aria-label': typeof props.title === 'string' ? props.title : undefined,
+      }, [
+        h('div', {
+          key: 'head',
+          style: {
+            display: 'flex',
+            alignItems: 'center',
+            gap: GAP.sm,
+            padding: `${GAP.md - 1}px ${GAP.md + 2}px ${GAP.sm + 3}px`,
+            borderBottom: `1px solid ${C.border1}`,
+            background: C.bg1,
+          },
+        }, [
+          h('div', { key: 'tw', style: { display: 'flex', flexDirection: 'column', gap: 4, flex: 1, minWidth: 0 } }, [
+            h('h3', {
+              key: 't',
+              style: { margin: 0, fontSize: FS.title, fontWeight: 680, lineHeight: 1.5, color: C.text },
+            }, props.title),
+            props.hint ? h('p', { key: 'h', style: hintStyle() }, props.hint) : null,
+          ]),
+          props.action ? h('div', { key: 'a', style: { flex: 'none' } }, props.action) : null,
+        ]),
+        h('div', {
+          key: 'body',
+          style: { display: 'flex', flexDirection: 'column', gap: GAP.md, padding: `${GAP.md}px ${GAP.md + 2}px` },
+        }, props.children),
+      ])
+    }
+
+/**
+ * 按钮。
+ *
+ * 视觉：细边 + 顶高光 + 悬停时一条斜向高光扫过 + 按下缩到 .985 并加内阴影。
+ * 立体感来自「按下去看得见」这一下的反馈，不是靠堆渐变。
+ *
+ * @param {object} props
+ * @param {string} props.label
+ * @param {'default'|'primary'|'ghost'|'danger'} [props.variant]
+ * @param {'sm'|'md'} [props.size]
+ * @param {boolean} [props.disabled]
+ * @param {boolean} [props.busy] 进行中：显示转圈并禁用
+ * @param {() => void} props.onClick
+ * @returns {import('react').ReactElement}
+ */
+      function Button(props) {
+      const variant = props.variant ?? 'default'
+      const small = props.size === 'sm'
+      const disabled = props.disabled === true || props.busy === true
+
+      const paint = {
+        default: { background: C.bg1, color: C.text, border: C.border2 },
+        primary: { background: C.accent, color: '#fff', border: 'transparent' },
+        ghost: { background: 'transparent', color: C.textDim, border: 'transparent' },
+        danger: { background: 'transparent', color: C.danger, border: `color-mix(in srgb, ${C.danger} 55%, transparent)` },
+      }[variant]
+
+      return h('button', {
+        type: 'button',
+        disabled,
+        'aria-busy': props.busy === true ? 'true' : undefined,
+        onClick: disabled ? undefined : props.onClick,
+        style: {
+          position: 'relative',
+          overflow: 'hidden',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: GAP.xs,
+          minHeight: small ? 28 : 32,
+          padding: small ? '4px 12px' : '6px 16px',
+          borderRadius: small ? RADIUS.sm : 9,
+          border: `1px solid ${paint.border}`,
+          background: paint.background,
+          boxShadow: variant === 'ghost' ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.08)',
+          color: disabled ? C.textFaint : paint.color,
+          font: 'inherit',
+          fontSize: small ? FS.small : 12.5,
+          fontWeight: 580,
+          lineHeight: 1.4,
+          cursor: disabled ? 'default' : 'pointer',
+          opacity: disabled ? 0.45 : 1,
+          whiteSpace: 'nowrap',
+          transition: 'transform .16s cubic-bezier(.34,1.4,.4,1), border-color .2s, background .2s, box-shadow .2s',
+          WebkitTapHighlightColor: 'transparent',
+        },
+      }, props.busy
+        ? h('span', { key: 's', 'aria-hidden': 'true', style: { fontSize: FS.small, opacity: 0.8 } }, '处理中…')
+        : props.label)
+    }
+
+/**
+ * 开关。
+ *
+ * 结构是 track + 滑块两层，滑块用 spring 曲线回弹。
+ *
+ * @param {object} props
+ * @param {boolean} props.checked
+ * @param {(next: boolean) => void} props.onChange
+ * @param {string} [props.label]
+ * @returns {import('react').ReactElement}
+ */
+      function Switch(props) {
+      const on = props.checked === true
+      return h('button', {
+        type: 'button',
+        role: 'switch',
+        'aria-checked': on ? 'true' : 'false',
+        'aria-label': props.label,
+        onClick: () => props.onChange(!on),
+        style: {
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 9,
+          padding: 0,
+          border: 0,
+          background: 'transparent',
+          font: 'inherit',
+          color: 'inherit',
+          cursor: 'pointer',
+          WebkitTapHighlightColor: 'transparent',
+        },
+      }, [
+        h('span', {
+          key: 'track',
+          'aria-hidden': 'true',
+          style: {
+            position: 'relative',
+            width: 38,
+            height: 21,
+            flex: 'none',
+            borderRadius: RADIUS.pill,
+            border: `1px solid ${on ? 'transparent' : C.border2}`,
+            background: on ? C.accent : C.bg1,
+            boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.18)',
+            transition: `background .22s ${EASE.out}, border-color .22s ${EASE.out}`,
+          },
+        }, h('span', {
+          style: {
+            position: 'absolute',
+            top: 2,
+            left: 2,
+            width: 15,
+            height: 15,
+            borderRadius: '50%',
+            background: on ? '#fff' : C.textFaint,
+            boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+            transform: on ? 'translateX(17px)' : 'translateX(0)',
+            transition: `transform .28s ${EASE.settle}, background .2s ${EASE.out}`,
+          },
+        })),
+        props.label
+          ? h('span', { key: 'l', style: { fontSize: FS.body, lineHeight: 1.7, color: C.text } }, props.label)
+          : null,
+      ])
+    }
+
+/**
+ * 文本框 / 多行框。
+ *
+ * 常态是「凹槽」手感（内阴影），focus 只换边色 + 外发光，凹槽不动。
+ *
+ * @param {object} props
+ * @param {string} [props.value]
+ * @param {(value: string) => void} props.onChange
+ * @param {string} [props.placeholder]
+ * @param {boolean} [props.multiline]
+ * @param {'text'|'number'|'search'} [props.type]
+ * @param {object} [props.style]
+ * @returns {import('react').ReactElement}
+ */
+      function Input(props) {
+      const base = {
+        font: 'inherit',
+        fontSize: FS.body,
+        padding: '8px 12px',
+        borderRadius: 9,
+        border: `1px solid ${C.border2}`,
+        background: C.bgBase,
+        boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.16)',
+        color: C.text,
+        minWidth: 0,
+        width: '100%',
+        outline: 'none',
+        transition: `border-color .18s ${EASE.out}, box-shadow .2s ${EASE.out}`,
+      }
+      const shared = {
+        value: props.value ?? '',
+        placeholder: props.placeholder,
+        onChange: (event) => props.onChange(event.target.value),
+        onFocus: (event) => {
+          event.currentTarget.style.borderColor = C.accent
+          event.currentTarget.style.boxShadow = `inset 0 1px 2px rgba(0,0,0,0.12), 0 0 0 3px color-mix(in srgb, ${C.accent} 18%, transparent)`
+        },
+        onBlur: (event) => {
+          event.currentTarget.style.borderColor = C.border2
+          event.currentTarget.style.boxShadow = 'inset 0 1px 2px rgba(0,0,0,0.16)'
+        },
+      }
+
+      if (props.multiline === true) {
+        return h('textarea', {
+          ...shared,
+          style: sx(base, {
+            minHeight: 128,
+            lineHeight: 1.85,
+            resize: 'vertical',
+            fontFamily: 'var(--ds-font-family-code, ui-monospace, monospace)',
+            fontSize: FS.small,
+          }, props.style),
+        })
+      }
+      return h('input', {
+        ...shared,
+        type: props.type ?? 'text',
+        style: sx(base, props.style),
+      })
+    }
+
+/**
+ * 下拉选择。
+ *
+ * @param {object} props
+ * @param {string} props.value
+ * @param {Array<{ value: string, label: string }>} props.options
+ * @param {(value: string) => void} props.onChange
+ * @returns {import('react').ReactElement}
+ */
+      function Select(props) {
+      return h('select', {
+        value: props.value,
+        onChange: (event) => props.onChange(event.target.value),
+        style: {
+          font: 'inherit',
+          fontSize: FS.body,
+          padding: '8px 12px',
+          borderRadius: 9,
+          border: `1px solid ${C.border2}`,
+          background: C.bgBase,
+          color: C.text,
+          cursor: 'pointer',
+          outline: 'none',
+        },
+      }, (props.options ?? []).map((option) => h('option', {
+        key: option.value,
+        value: option.value,
+      }, option.label)))
+    }
+
+/**
+ * 标签。用于状态徽章。
+ *
+ * @param {object} props
+ * @param {string} props.text
+ * @param {'neutral'|'accent'|'success'|'danger'|'warn'} [props.tone]
+ * @returns {import('react').ReactElement}
+ */
+      function Badge(props) {
+      const tone = props.tone ?? 'neutral'
+      const paint = {
+        neutral: { color: C.textFaint, border: C.border2 },
+        accent: { color: C.accent, border: `color-mix(in srgb, ${C.accent} 45%, transparent)` },
+        success: { color: C.success, border: `color-mix(in srgb, ${C.success} 45%, transparent)` },
+        danger: { color: C.danger, border: `color-mix(in srgb, ${C.danger} 45%, transparent)` },
+        warn: { color: C.warn, border: `color-mix(in srgb, ${C.warn} 45%, transparent)` },
+      }[tone]
+
+      return h('span', {
+        style: {
+          display: 'inline-flex',
+          alignItems: 'center',
+          padding: '1px 8px',
+          borderRadius: RADIUS.pill,
+          border: `1px solid ${paint.border}`,
+          fontSize: 10.5,
+          fontWeight: 500,
+          lineHeight: 1.7,
+          color: paint.color,
+          whiteSpace: 'nowrap',
+        },
+      }, props.text)
+    }
+
+/**
+ * 提示条。四种语气。
+ *
+ * @param {object} props
+ * @param {string} props.text
+ * @param {'info'|'ok'|'err'|'warn'} [props.tone]
+ * @param {import('react').ReactNode} [props.action]
+ * @returns {import('react').ReactElement}
+ */
+      function Note(props) {
+      const tone = props.tone ?? 'info'
+      const paint = {
+        info: { color: C.textDim, border: C.border1, bg: 'transparent' },
+        ok: { color: C.success, border: `color-mix(in srgb, ${C.success} 45%, transparent)`, bg: `color-mix(in srgb, ${C.success} 9%, transparent)` },
+        err: { color: C.danger, border: `color-mix(in srgb, ${C.danger} 45%, transparent)`, bg: `color-mix(in srgb, ${C.danger} 9%, transparent)` },
+        warn: { color: C.warn, border: `color-mix(in srgb, ${C.warn} 45%, transparent)`, bg: `color-mix(in srgb, ${C.warn} 9%, transparent)` },
+      }[tone]
+
+      return h('div', {
+        role: tone === 'err' ? 'alert' : undefined,
+        style: {
+          display: 'flex',
+          alignItems: 'center',
+          gap: GAP.sm,
+          padding: '10px 13px',
+          borderRadius: RADIUS.md,
+          border: `1px solid ${paint.border}`,
+          background: paint.bg,
+          fontSize: FS.small,
+          lineHeight: 1.8,
+          color: paint.color,
+        },
+      }, [
+        h('span', { key: 't', style: { flex: 1, minWidth: 0 } }, props.text),
+        props.action ? h('span', { key: 'a', style: { flex: 'none' } }, props.action) : null,
+      ])
+    }
+
+/**
+ * 设置行：标签在上，控件在下。
+ *
+ * 上下排列而不是左右两列，是因为设置页的容器宽度不确定；
+ * 左右两列在窄容器里会把标签挤断行。
+ *
+ * @param {object} props
+ * @param {string} props.label
+ * @param {string} [props.hint]
+ * @param {import('react').ReactNode} props.children
+ * @returns {import('react').ReactElement}
+ */
+      function Field(props) {
+      return h('div', {
+        style: { display: 'flex', flexDirection: 'column', gap: GAP.xs + 2 },
+      }, [
+        h('div', { key: 'l', style: { display: 'flex', flexDirection: 'column', gap: 2 } }, [
+          h('span', { key: 't', style: { fontSize: 12.5, lineHeight: 1.7, color: C.textDim } }, props.label),
+          props.hint ? h('span', { key: 'h', style: hintStyle() }, props.hint) : null,
+        ]),
+        h('div', { key: 'c', style: { display: 'flex', alignItems: 'center', gap: GAP.sm, flexWrap: 'wrap' } }, props.children),
+      ])
+    }
+
+/**
+ * 页面头：标题 + 一句话说明 + 可选的状态徽章/数字。
+ *
+ * @param {object} props
+ * @param {string} props.title
+ * @param {string} [props.desc]
+ * @param {import('react').ReactNode} [props.extra]
+ * @returns {import('react').ReactElement}
+ */
+      function PageHeader(props) {
+      return h('header', {
+        style: {
+          display: 'flex',
+          flexDirection: 'column',
+          gap: GAP.sm,
+          padding: `2px 2px ${GAP.md + 4}px`,
+          borderBottom: `1px solid ${C.border1}`,
+        },
+      }, [
+        h('div', { key: 'line', style: { display: 'flex', alignItems: 'center', gap: GAP.sm, flexWrap: 'wrap' } }, [
+          h('h2', {
+            key: 't',
+            style: { margin: 0, fontSize: 20, fontWeight: 680, letterSpacing: '-.3px', lineHeight: 1.4, color: C.text },
+          }, props.title),
+          props.extra ? h('span', { key: 'x', style: { display: 'inline-flex', gap: GAP.xs, flexWrap: 'wrap' } }, props.extra) : null,
+        ]),
+        props.desc ? h('p', { key: 'd', style: sx(hintStyle(), { maxWidth: '58ch' }) }, props.desc) : null,
+      ])
+    }
+
+/**
+ * 页面根容器：居中、限宽、统一的纵向节奏。
+ *
+ * @param {object} props
+ * @param {import('react').ReactNode} props.children
+ * @returns {import('react').ReactElement}
+ */
+      function Page(props) {
+      return h('div', {
+        style: {
+          display: 'flex',
+          flexDirection: 'column',
+          gap: GAP.md + 2,
+          maxWidth: 820,
+          marginInline: 'auto',
+          width: '100%',
+          padding: '4px 0 32px',
+          fontSize: FS.body,
+          lineHeight: 1.8,
+          color: C.text,
+          WebkitFontSmoothing: 'antialiased',
+        },
+      }, props.children)
+    }
+
+/**
+ * 造一套原语。
+ *
+ * @param {Function} h React.createElement（由插件入口从 `require('react')` 拿到）
+ * @returns {{
+ *   Card: Function, Button: Function, Switch: Function, Input: Function,
+ *   Select: Function, Badge: Function, Note: Function, Field: Function,
+ *   PageHeader: Function, Page: Function,
+ *   FS: object, GAP: object, RADIUS: object, C: object, EASE: object, sx: Function, hintStyle: Function,
+ * }}
+ */
+    function makePrimitives(h) {
+      if (typeof h !== 'function') {
+        throw new TypeError('makePrimitives 需要 React.createElement')
+      }
+      return {
+        Card, Button, Switch, Input, Select, Badge, Note, Field, PageHeader, Page,
+        FS, GAP, RADIUS, C, EASE, sx, hintStyle,
+      }
+    }
+
+      return { FS, GAP, RADIUS, C, EASE, sx, hintStyle, makePrimitives }
+    })()
+
     // ═══ settings.js ═══
     var __mod_settings = (function () {
       var { loadUx, saveUx, DEFAULT_TIMING } = __mod_config
+      var { makePrimitives } = __mod_ui
       var { parseImportText } = __mod_wordbook
 /**
  * settings.js —— 插件设置面板（挂在 Plugins 页的插件详情里）。
@@ -2883,47 +3614,133 @@ window.__ModuleLoader__.load({
    卡片带拉丝细纹底与外投影。昼夜由宿主切换，这里不写死颜色。
    ═══════════════════════════════════════════════════════════════════════ */
 
-    .hds-root {
+/** 字号标度：三档，不再散成五档 */
+    .hds-page {
       --ease-instrument: cubic-bezier(.16,1,.3,1);
       --ease-settle: cubic-bezier(.34,1.4,.4,1);
+      --fs-title: 15px;
+      --fs-body: 13px;
+      --fs-small: 11.5px;
       display: flex;
       flex-direction: column;
-      gap: 30px;
-      max-width: 860px;
-      padding: 4px 0 28px;
-      font-size: 13.5px;
-      line-height: 1.78;
-      color: var(--dsw-alias-label-primary);
+      gap: 22px;
+      max-width: 820px;
+  /* 不通栏贴左：宽屏下居中，两侧留白 */
+      margin-inline: auto;
+      width: 100%;
+      padding: 4px 0 32px;
+      font-size: var(--fs-body);
+      line-height: 1.8;
+      color: var(--dsw-alias-label-primary, #1a1a1a);
       -webkit-font-smoothing: antialiased;
     }
-    .hds-root * { box-sizing: border-box; }
+    .hds-page * { box-sizing: border-box; }
 
-/* ── 区块 ────────────────────────────────────────────────────────────── */
-    .hds-section { display: flex; flex-direction: column; gap: 18px; }
+/* ── 页面头 ──────────────────────────────────────────────────────────── */
+    .hds-header {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 2px 2px 20px;
+      border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+    }
+    .hds-header-line {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .hds-header-icon { font-size: 20px; line-height: 1; }
+    .hds-header-title {
+      margin: 0;
+      font-size: 20px;
+      font-weight: 680;
+      letter-spacing: -.3px;
+      line-height: 1.4;
+    }
+    .hds-header-desc {
+      margin: 0;
+      max-width: 58ch;
+      font-size: var(--fs-body);
+      line-height: 1.85;
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
+    }
+    .hds-header-stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 2px;
+    }
+    .hds-stat-chip {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 3px;
+      padding: 4px 11px;
+      border-radius: 999px;
+      border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+      background: var(--dsw-alias-bg-layer-1, #f7f7f8);
+      font-size: var(--fs-small);
+      line-height: 1.7;
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
+    }
+    .hds-stat-chip b {
+      font-size: 12.5px;
+      font-weight: 650;
+      font-variant-numeric: tabular-nums;
+      color: var(--dsw-alias-label-primary, #1a1a1a);
+    }
+
+    .hds-root {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+/* ── 分区：一张卡片 ──────────────────────────────────────────────────── */
+    .hds-section {
+      display: flex;
+      flex-direction: column;
+      border-radius: 14px;
+      border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+      background:
+        repeating-linear-gradient(115deg, rgb(255 255 255 / 4%) 0 1px, transparent 1px 2.5px) padding-box,
+        var(--dsw-alias-bg-layer-2, #ffffff);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
+      overflow: hidden;
+    }
 
     .hds-head {
       display: flex;
-      flex-wrap: wrap;
-      align-items: baseline;
-      gap: 10px;
-      padding-bottom: 10px;
-      border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(127,127,127,.16));
+      flex-direction: column;
+      gap: 5px;
+      padding: 15px 18px 13px;
+      border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 60%, transparent);
     }
 
     .hds-title {
-      font-size: 14px;
+      margin: 0;
+      font-size: var(--fs-title);
       font-weight: 680;
-      letter-spacing: -.2px;
+      letter-spacing: -.15px;
       line-height: 1.5;
     }
 
-    .hds-hint {
-      font-size: 12px;
-      line-height: 1.85;
-      color: var(--dsw-alias-label-tertiary);
+    .hds-subtitle {
+      margin: 0;
+      font-size: var(--fs-body);
+      font-weight: 650;
+      line-height: 1.6;
+      color: var(--dsw-alias-label-primary, #1a1a1a);
     }
 
-    .hds-stack { display: flex; flex-direction: column; gap: 14px; }
+    .hds-hint {
+      margin: 0;
+      font-size: var(--fs-small);
+      line-height: 1.9;
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
+    }
+
+    .hds-stack { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px 18px; }
     .hds-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 /* 一行设置：标签在上、控件在下，留足垂直空间 */
@@ -2936,7 +3753,7 @@ window.__ModuleLoader__.load({
     .hds-field > .hds-label {
       font-size: 12.5px;
       line-height: 1.7;
-      color: var(--dsw-alias-label-secondary);
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
     }
 
 /* ── 按钮 ────────────────────────────────────────────────────────────── */
@@ -2950,10 +3767,10 @@ window.__ModuleLoader__.load({
       min-height: 32px;
       padding: 6px 16px;
       border-radius: 9px;
-      border: 1px solid var(--dsw-alias-border-l2);
-      background: color-mix(in srgb, var(--dsw-alias-bg-layer-3) 84%, transparent);
+      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-2, #ffffff) 84%, transparent);
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%);
-      color: var(--dsw-alias-label-primary);
+      color: var(--dsw-alias-label-primary, #1a1a1a);
       font: inherit;
       font-size: 12.5px;
       font-weight: 580;
@@ -2985,8 +3802,8 @@ window.__ModuleLoader__.load({
 
     .hds-btn:hover:not(:disabled) {
       transform: translateY(-1px);
-      border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 62%, var(--dsw-alias-border-l2));
-      background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 7%, var(--dsw-alias-bg-layer-3));
+      border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 62%, var(--dsw-alias-border-l2, rgba(0,0,0,.18)));
+      background: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 7%, var(--dsw-alias-bg-layer-2, #ffffff));
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%);
     }
 
@@ -2998,7 +3815,7 @@ window.__ModuleLoader__.load({
     }
 
     .hds-btn:focus-visible {
-      outline: 2px solid var(--dsw-alias-state-business-primary);
+      outline: 2px solid var(--dsw-alias-brand-primary, #4d6bfe);
       outline-offset: 2px;
     }
 
@@ -3007,17 +3824,17 @@ window.__ModuleLoader__.load({
 
     .hds-btn-primary {
       background: linear-gradient(180deg,
-        color-mix(in srgb, var(--dsw-alias-state-business-primary) 88%, #fff),
-        var(--dsw-alias-state-business-primary));
-      border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 82%, #000);
-      color: var(--dsw-alias-label-on-accent, #fff);
+        color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 88%, #fff),
+        var(--dsw-alias-brand-primary, #4d6bfe));
+      border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 82%, #000);
+      color: var(--dsw-alias-label-primary, #fff);
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%),
                   inset 0 -10px 18px -12px rgb(0 0 0 / 24%);
     }
     .hds-btn-primary:hover:not(:disabled) {
       background: linear-gradient(180deg,
-        var(--dsw-alias-state-business-primary),
-        color-mix(in srgb, var(--dsw-alias-state-business-primary) 88%, #000));
+        var(--dsw-alias-brand-primary, #4d6bfe),
+        color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 88%, #000));
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 26%),
                   inset 0 -10px 18px -12px rgb(0 0 0 / 18%);
     }
@@ -3026,22 +3843,22 @@ window.__ModuleLoader__.load({
       background: transparent;
       border-color: transparent;
       box-shadow: none;
-      color: var(--dsw-alias-label-secondary);
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
     }
     .hds-btn-ghost:hover:not(:disabled) {
-      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 80%, transparent);
-      border-color: var(--dsw-alias-border-l1);
-      color: var(--dsw-alias-label-primary);
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 80%, transparent);
+      border-color: var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+      color: var(--dsw-alias-label-primary, #1a1a1a);
     }
     .hds-btn-ghost::after { content: none; }
 
     .hds-btn-danger {
-      border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 55%, var(--dsw-alias-border-l2));
-      color: var(--dsw-alias-state-error-primary);
+      border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 55%, var(--dsw-alias-border-l2, rgba(0,0,0,.18)));
+      color: var(--dsw-alias-state-error-primary, #e5484d);
     }
     .hds-btn-danger:hover:not(:disabled) {
-      background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, var(--dsw-alias-bg-layer-3));
-      border-color: var(--dsw-alias-state-error-primary);
+      background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 8%, var(--dsw-alias-bg-layer-2, #ffffff));
+      border-color: var(--dsw-alias-state-error-primary, #e5484d);
     }
 
     .hds-btn-sm { min-height: 28px; padding: 4px 12px; font-size: 11.5px; border-radius: 7px; }
@@ -3052,23 +3869,23 @@ window.__ModuleLoader__.load({
       font-size: 13px;
       padding: 8px 12px;
       border-radius: 9px;
-      border: 1px solid var(--dsw-alias-border-l2);
-      background: var(--dsw-alias-bg-layer-1);
+      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      background: var(--dsw-alias-bg-layer-1, #f7f7f8);
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%),
                   inset 0 2px 6px -2px rgb(0 0 0 / 10%);
-      color: var(--dsw-alias-label-primary);
+      color: var(--dsw-alias-label-primary, #1a1a1a);
       min-width: 0;
       transition: border-color .18s var(--ease-instrument), box-shadow .2s var(--ease-instrument);
     }
     .hds-input:hover, .hds-select:hover {
-      border-color: color-mix(in srgb, var(--dsw-alias-border-l2) 55%, var(--dsw-alias-state-business-primary));
+      border-color: color-mix(in srgb, var(--dsw-alias-border-l2, rgba(0,0,0,.18)) 55%, var(--dsw-alias-brand-primary, #4d6bfe));
     }
     .hds-input:focus, .hds-select:focus {
       outline: none;
-      border-color: var(--dsw-alias-state-business-primary);
+      border-color: var(--dsw-alias-brand-primary, #4d6bfe);
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%),
                   inset 0 2px 6px -2px rgb(0 0 0 / 8%),
-                  0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);
+                  0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 16%, transparent);
     }
     .hds-input[type="number"] { max-width: 110px; }
 
@@ -3080,19 +3897,19 @@ window.__ModuleLoader__.load({
       line-height: 1.85;
       padding: 12px 14px;
       border-radius: 9px;
-      border: 1px solid var(--dsw-alias-border-l2);
-      background: var(--dsw-alias-bg-layer-1);
+      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      background: var(--dsw-alias-bg-layer-1, #f7f7f8);
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%),
                   inset 0 2px 6px -2px rgb(0 0 0 / 10%);
-      color: var(--dsw-alias-label-primary);
+      color: var(--dsw-alias-label-primary, #1a1a1a);
       resize: vertical;
       transition: border-color .18s var(--ease-instrument), box-shadow .2s var(--ease-instrument);
     }
     .hds-textarea:focus {
       outline: none;
-      border-color: var(--dsw-alias-state-business-primary);
+      border-color: var(--dsw-alias-brand-primary, #4d6bfe);
       box-shadow: inset 0 2px 6px -2px rgb(0 0 0 / 8%),
-                  0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 16%, transparent);
+                  0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 16%, transparent);
     }
 
 /* ── 开关：spring 滑块 ───────────────────────────────────────────────── */
@@ -3115,8 +3932,8 @@ window.__ModuleLoader__.load({
       width: 38px;
       height: 21px;
       border-radius: 999px;
-      background: var(--dsw-alias-bg-layer-1);
-      border: 1px solid var(--dsw-alias-border-l2);
+      background: var(--dsw-alias-bg-layer-1, #f7f7f8);
+      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
       box-shadow: inset 0 1px 3px rgb(0 0 0 / 10%), inset 0 -1px 0 rgb(255 255 255 / 4%);
       position: relative;
       flex: none;
@@ -3131,7 +3948,7 @@ window.__ModuleLoader__.load({
       top: 2px; left: 2px;
       width: 15px; height: 15px;
       border-radius: 50%;
-      background: var(--dsw-alias-label-primary);
+      background: var(--dsw-alias-label-primary, #1a1a1a);
       box-shadow: 0 1px 3px rgb(0 0 0 / 28%), inset 0 1px 0 rgb(255 255 255 / 20%);
       transition: transform .28s var(--ease-settle),
                   background .2s var(--ease-instrument),
@@ -3141,19 +3958,19 @@ window.__ModuleLoader__.load({
     .hds-switch:active .hds-switch-track::after { width: 18px; }
 
     .hds-switch[aria-checked="true"] .hds-switch-track {
-      background: var(--dsw-alias-state-business-primary);
-      border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 85%, #000);
+      background: var(--dsw-alias-brand-primary, #4d6bfe);
+      border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 85%, #000);
       box-shadow: inset 0 1px 3px rgb(0 0 0 / 14%), inset 0 -1px 0 rgb(255 255 255 / 8%);
     }
     .hds-switch[aria-checked="true"] .hds-switch-track::after {
       transform: translateX(17px);
-      background: var(--dsw-alias-label-on-accent, #fff);
+      background: var(--dsw-alias-label-primary, #fff);
     }
     .hds-switch[aria-checked="true"]:active .hds-switch-track::after {
       transform: translateX(14px);
     }
     .hds-switch:focus-visible .hds-switch-track {
-      box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-state-business-primary) 22%, transparent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 22%, transparent);
     }
 
     .hds-switch-text { font-size: 13px; line-height: 1.7; }
@@ -3167,11 +3984,11 @@ window.__ModuleLoader__.load({
       gap: 14px;
       padding: 13px 15px;
       border-radius: 13px;
-      border: 1px solid var(--dsw-alias-border-l2);
+      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
   /* 拉丝细纹垫底：从边缘隐约透出，不做成显眼图案 */
       background:
         repeating-linear-gradient(115deg, rgb(255 255 255 / 4.5%) 0 1px, transparent 1px 2.5px) padding-box,
-        color-mix(in srgb, var(--dsw-alias-bg-layer-3) 84%, transparent);
+        color-mix(in srgb, var(--dsw-alias-bg-layer-2, #ffffff) 84%, transparent);
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%),
                   inset 0 -12px 24px -16px rgb(0 0 0 / 14%);
       transition: transform .22s var(--ease-instrument),
@@ -3181,7 +3998,7 @@ window.__ModuleLoader__.load({
 
     .hds-card:hover {
       transform: translateY(-1px);
-      border-color: color-mix(in srgb, var(--dsw-alias-state-business-primary) 58%, var(--dsw-alias-border-l2));
+      border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 58%, var(--dsw-alias-border-l2, rgba(0,0,0,.18)));
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 11%),
                   inset 0 -12px 24px -16px rgb(0 0 0 / 10%);
     }
@@ -3201,7 +4018,7 @@ window.__ModuleLoader__.load({
     .hds-card-meta {
       font-size: 12px;
       line-height: 1.85;
-      color: var(--dsw-alias-label-tertiary);
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
     }
 
     .hds-badge {
@@ -3216,12 +4033,12 @@ window.__ModuleLoader__.load({
       white-space: nowrap;
     }
     .hds-badge-builtin {
-      color: var(--dsw-alias-label-tertiary);
-      border-color: var(--dsw-alias-border-l2);
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
+      border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.18));
     }
     .hds-badge-on {
-      color: var(--dsw-alias-state-success-primary);
-      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent);
+      color: var(--dsw-alias-state-success-primary, #2f9e44);
+      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 45%, transparent);
     }
 
 /* ── 生词本 chips ────────────────────────────────────────────────────── */
@@ -3236,7 +4053,7 @@ window.__ModuleLoader__.load({
     .hds-chips::-webkit-scrollbar { width: 10px; height: 10px; }
     .hds-chips::-webkit-scrollbar-track { background: transparent; }
     .hds-chips::-webkit-scrollbar-thumb {
-      background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 32%, transparent);
+      background: color-mix(in srgb, var(--dsw-alias-label-secondary, #5c5c5c) 32%, transparent);
       border-radius: 5px;
     }
 
@@ -3246,14 +4063,14 @@ window.__ModuleLoader__.load({
       gap: 4px;
       padding: 4px 6px 4px 12px;
       border-radius: 999px;
-      border: 1px solid var(--dsw-alias-border-l2);
-      background: var(--dsw-alias-bg-layer-1);
+      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      background: var(--dsw-alias-bg-layer-1, #f7f7f8);
       font-size: 12.5px;
       line-height: 1.7;
       transition: border-color .18s var(--ease-instrument), background .18s var(--ease-instrument);
     }
     .hds-chip:hover {
-      border-color: color-mix(in srgb, var(--dsw-alias-border-l2) 55%, var(--dsw-alias-state-business-primary));
+      border-color: color-mix(in srgb, var(--dsw-alias-border-l2, rgba(0,0,0,.18)) 55%, var(--dsw-alias-brand-primary, #4d6bfe));
     }
 
     .hds-chip-x {
@@ -3264,7 +4081,7 @@ window.__ModuleLoader__.load({
       border: none;
       border-radius: 50%;
       background: none;
-      color: var(--dsw-alias-label-tertiary);
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
       cursor: pointer;
       font-size: 14px;
       line-height: 1;
@@ -3272,8 +4089,8 @@ window.__ModuleLoader__.load({
       transition: background .16s ease, color .16s ease;
     }
     .hds-chip-x:hover {
-      background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 14%, transparent);
-      color: var(--dsw-alias-state-error-primary);
+      background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 14%, transparent);
+      color: var(--dsw-alias-state-error-primary, #e5484d);
     }
 
 /* ── 提示条 ──────────────────────────────────────────────────────────── */
@@ -3287,17 +4104,17 @@ window.__ModuleLoader__.load({
       line-height: 1.8;
     }
     .hds-note-ok {
-      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary) 45%, transparent);
-      background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 9%, transparent);
+      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 45%, transparent);
+      background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 9%, transparent);
     }
     .hds-note-err {
-      border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary) 45%, transparent);
-      background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 9%, transparent);
+      border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 45%, transparent);
+      background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 9%, transparent);
     }
     .hds-note-info {
-      border-color: var(--dsw-alias-border-l1);
-      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 70%, transparent);
-      color: var(--dsw-alias-label-secondary);
+      border-color: var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 70%, transparent);
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
     }
 
     .hds-stat { font-variant-numeric: tabular-nums; font-weight: 600; }
@@ -3308,9 +4125,9 @@ window.__ModuleLoader__.load({
       line-height: 1.9;
       padding: 8px 12px;
       border-radius: 8px;
-      border: 1px dashed var(--dsw-alias-border-l2);
-      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1) 60%, transparent);
-      color: var(--dsw-alias-label-tertiary);
+      border: 1px dashed var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 60%, transparent);
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
       user-select: all;
     }
 
@@ -3329,6 +4146,9 @@ window.__ModuleLoader__.load({
  * @param {object} props 宿主注入的 PropsRuntime，含 view 与 form
  * @returns {import('react').ReactElement | null}
  */
+/** 生词本一次最多渲染多少个 chip。超出的用一句「还有 N 个」交代，不静默截断。 */
+    const CHIP_LIMIT = 120
+
     function SettingsPanel(props) {
   // 只有当宿主**明确**说这是 summary 视图时才走摘要分支。
   // 不能写成 `view !== 'page'`：宿主在某些版本里可能根本不传 view，
@@ -3345,6 +4165,7 @@ window.__ModuleLoader__.load({
       const [busy, setBusy] = useState('')
       const [dictInfo, setDictInfo] = useState(null)
       const [packs, setPacks] = useState(() => readPacks(storage))
+      const [clearPending, setClearPending] = useState(false)
 
       const book = props?.wordbook
       const apiPrefix = props?.apiPrefix ?? '/api/dsh-hover-dict'
@@ -3395,11 +4216,22 @@ window.__ModuleLoader__.load({
         } catch { say('导出失败', 'err') }
       }
 
+  /**
+   * 清空生词本。
+   *
+   * 用内联二次确认，不用原生对话框 —— 系统弹窗会打断页面观感，
+   * 而且在设置页里弹一个原生弹窗像出错了。
+   */
       const onClear = () => {
         if (!book) return
         const total = book.size()
         if (total === 0) { say('生词本已经是空的', 'info'); return }
-        if (!window.confirm(`确定清空 ${total} 个生词？这个操作不能撤销。`)) return
+        if (!clearPending) {
+          setClearPending(true)
+          say(`再点一次「确认清空」会删掉 ${total} 个生词，这个操作不能撤销。`, 'info')
+          return
+        }
+        setClearPending(false)
         setBusy('clear')
         Promise.all(book.list().map((item) => book.remove(item.head))).then(() => {
           setBusy('')
@@ -3423,101 +4255,111 @@ window.__ModuleLoader__.load({
       const bookSize = book?.size?.() ?? 0
       const bookWords = book?.list?.() ?? []
 
-  /* ── 区块头 ── */
-      const section = (key, title, hint, children) => h('div', { key, className: 'hds-section' }, [
-        h('div', { key: 'head', className: 'hds-head' }, [
-          h('div', { key: 't', className: 'hds-title' }, title),
-          hint ? h('div', { key: 'h', className: 'hds-hint' }, hint) : null,
-        ]),
-        h('div', { key: 'body', className: 'hds-stack' }, children),
-      ])
+  /* ── 用共用原语组装 ── */
+      const P = makePrimitives(h)
+      const { Card, Button, Switch, Input, Select, Badge, Note, Field, PageHeader, Page, GAP, C, FS } = P
 
-  /* ── 一行设置 ── */
-      const field = (key, label, control) => h('div', { key, className: 'hds-field' }, [
-        h('span', { key: 'l', className: 'hds-label' }, label),
-        h('div', { key: 'c', className: 'hds-row' }, control),
-      ])
+      const section = (key, title, hint, children, action) => h(Card, {
+        key,
+        title,
+        hint,
+        action,
+      }, children)
 
-      return h('div', { className: 'hds-root' }, [
+      const field = (key, label, control, hint) => h(Field, { key, label, hint }, control)
+
+      return h(Page, null, [
+        h(PageHeader, {
+          key: 'hdr',
+          title: '英语翻译',
+          desc: '在对话里点击或划选英文单词看释义，划选纯英文句子翻成中文。生词本会自动高亮你已经背过的词。',
+          extra: [
+            h(Badge, { key: 'b', text: '离线', tone: 'success' }),
+            h(Badge, { key: 'c', text: `${(dictInfo?.entries ?? 20499).toLocaleString()} 词条`, tone: 'neutral' }),
+          ],
+        }),
 
     /* 翻译接口 */
         section('tr', '翻译接口',
-          '划选纯英文句子时用哪个服务翻译。三项都不需要额外密钥。',
+          '划选纯英文句子时用哪个服务。三项都不需要额外密钥。',
           [
-            field('f1', '翻译服务', h('select', {
-              className: 'hds-select',
+            field('f1', '翻译服务', h(Select, {
               value: translator,
-              onChange: (event) => {
-                setTranslator(event.target.value)
-                writeTranslator(storage, event.target.value)
-              },
-            },
-            h('option', { value: 'auto' }, '自动（先用 Google，失败换 Bing）'),
-            h('option', { value: 'google' }, 'Google 翻译'),
-            h('option', { value: 'bing' }, 'Bing 翻译'),
-            h('option', { value: 'off' }, '关闭句子翻译'),
-            )),
+              options: [
+                { value: 'auto', label: '自动（先用 Google，失败换 Bing）' },
+                { value: 'google', label: 'Google 翻译' },
+                { value: 'bing', label: 'Bing 翻译' },
+                { value: 'off', label: '关闭句子翻译' },
+              ],
+              onChange: (value) => { setTranslator(value); writeTranslator(storage, value) },
+            })),
           ]),
 
-    /* 词库管理 */
+    /* 词库 */
         section('packs', '词库与句子库',
-          '系统自带三个，随插件分发，完全离线。其余词库可以用下面的方式自己加。',
+          '系统自带三个，随插件分发，完全离线。其余词库可以自己加。',
           [
-            h('div', { key: 'cards', className: 'hds-cards' },
+            h('div', { key: 'cards', style: { display: 'flex', flexDirection: 'column', gap: GAP.sm } },
               WORD_PACKS.map((pack) => h('div', {
                 key: pack.id,
-                className: 'hds-card',
-                'data-installed': '',
+                style: {
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: GAP.md,
+                  padding: '13px 15px',
+                  borderRadius: 13,
+                  border: `1px solid ${C.border2}`,
+                  background: C.bg1,
+                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.07)',
+                },
               }, [
-                h('div', { key: 'm', className: 'hds-card-main' }, [
-                  h('div', { key: 'n', className: 'hds-card-name' }, [
-                    h('span', { key: 't' }, pack.name),
-                    h('span', { key: 'b', className: 'hds-badge hds-badge-builtin' }, '系统自带'),
+                h('div', { key: 'm', style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 } }, [
+                  h('div', { key: 'n', style: { display: 'flex', alignItems: 'center', gap: 8 } }, [
+                    h('span', { key: 't', style: { fontSize: FS.body, fontWeight: 650, color: C.text } }, pack.name),
+                    h(Badge, { key: 'b', text: '系统自带', tone: 'neutral' }),
                   ]),
-                  h('div', { key: 'd', className: 'hds-card-meta' }, pack.desc),
+                  h('div', { key: 'd', style: { fontSize: FS.small, lineHeight: 1.85, color: C.textFaint } }, pack.desc),
                 ]),
               ])),
             ),
-            h('div', { key: 'custom', className: 'hds-stack' }, [
-              h('div', { key: 't', className: 'hds-title', style: { fontSize: '13.5px' } }, '自己加词库'),
-              h('div', { key: 'h', className: 'hds-hint' },
-                '把词库文件放进下面这个目录，重启 DSH 后自动加载。'
-                + '支持 ECDICT 的 CSV（只要有 word 与 translation 两列），'
-                + '或者与 dict.dat 同构的 JSON。'),
-              h('div', { key: 'pathrow', className: 'hds-row' }, [
-                h('code', { key: 'p', className: 'hds-path' }, packsDir),
-                h('button', {
-                  key: 'copy',
-                  className: 'hds-btn hds-btn-sm',
-                  type: 'button',
+            h('div', { key: 'custom', style: { display: 'flex', flexDirection: 'column', gap: GAP.sm } }, [
+              h('h4', { key: 't', style: { margin: 0, fontSize: FS.body, fontWeight: 650, color: C.text } }, '自己加词库'),
+              h('p', { key: 'h', style: { margin: 0, fontSize: FS.small, lineHeight: 1.9, color: C.textDim } },
+                '把词库文件放进下面这个目录，重启 DSH 后自动加载。支持 ECDICT 的 CSV（只要有 word 与 translation 两列），或者与 dict.dat 同构的 JSON。'),
+              h('div', { key: 'row', style: { display: 'flex', alignItems: 'center', gap: GAP.sm, flexWrap: 'wrap' } }, [
+                h('code', {
+                  key: 'p',
+                  style: {
+                    flex: 1, minWidth: 200,
+                    fontFamily: 'var(--ds-font-family-code, ui-monospace, monospace)',
+                    fontSize: FS.small, lineHeight: 1.9,
+                    padding: '8px 12px', borderRadius: 8,
+                    border: `1px dashed ${C.border2}`,
+                    background: C.bgBase, color: C.textFaint,
+                    userSelect: 'all',
+                    overflowWrap: 'anywhere',
+                  },
+                }, packsDir),
+                h(Button, {
+                  key: 'copy', label: '复制路径', size: 'sm',
                   onClick: (event) => {
-                    const btn = event.currentTarget
+                    const btn = event?.currentTarget
                     const done = () => {
                       if (btn) btn.textContent = '已复制'
                       setTimeout(() => { if (btn) btn.textContent = '复制路径' }, 1400)
                     }
-                    try {
-                      navigator.clipboard?.writeText(packsDir).then(done, () => {})
-                    } catch { /* 剪贴板不可用就静默 */ }
+                    try { navigator.clipboard?.writeText(packsDir).then(done, () => {}) } catch { /* ignore */ }
                   },
-                }, '复制路径'),
-                h('button', {
-                  key: 'open',
-                  className: 'hds-btn hds-btn-sm',
-                  type: 'button',
-                  title: '在文件管理器里打开（若宿主支持）',
-                  onClick: () => {
-                    try {
-                      window.open(`file://${packsDir}`, '_blank')
-                    } catch { /* 被拦截就算了 */ }
-                  },
-                }, '打开文件夹'),
+                }),
               ]),
             ]),
-            h('div', { key: 'note', className: 'hds-note hds-note-info' },
-              `当前词库共 ${dictInfo?.entries ? dictInfo.entries.toLocaleString() : '20,499'} 个词条，`
-              + `${dictInfo?.examples ? dictInfo.examples.toLocaleString() : '8,960'} 个带双语例句，`
-              + `${dictInfo?.roots ? dictInfo.roots.toLocaleString() : '6,374'} 个带词根分析。`),
+            h(Note, {
+              key: 'note',
+              tone: 'info',
+              text: `当前 ${(dictInfo?.entries ?? 20499).toLocaleString()} 个词条 · `
+                + `${(dictInfo?.examples ?? 8960).toLocaleString()} 个带双语例句 · `
+                + `${(dictInfo?.roots ?? 6374).toLocaleString()} 个带词根分析`,
+            }),
           ]),
 
     /* 生词本 */
@@ -3526,103 +4368,88 @@ window.__ModuleLoader__.load({
           [
             bookSize > 0
               ? h('div', { key: 'chips', className: 'hds-chips' },
-                bookWords.slice(0, 120).map((item) => h('span', { key: item.head, className: 'hds-chip' }, [
+                bookWords.slice(0, CHIP_LIMIT).map((item) => h('span', { key: item.head, className: 'hds-chip' }, [
                   h('span', { key: 'w' }, item.head),
                   h('button', {
-                    key: 'x',
-                    className: 'hds-chip-x',
-                    type: 'button',
-                    title: '移出',
+                    key: 'x', className: 'hds-chip-x', type: 'button', title: '移出',
                     onClick: () => book.remove(item.head),
                   }, '×'),
                 ])),
               )
-              : h('div', { key: 'empty', className: 'hds-hint' }, '还没有生词。在对话里点开一个词，点标题旁边的 ☆ 就能收进来。'),
+              : h('p', { key: 'empty', style: { margin: 0, fontSize: FS.small, lineHeight: 1.85, color: C.textFaint } },
+                '还没有生词。在对话里点开一个词，点标题旁边的 ☆ 就能收进来。'),
 
-            h('textarea', {
+            bookSize > CHIP_LIMIT
+              ? h('p', { key: 'more', style: { margin: 0, fontSize: FS.small, color: C.textFaint } },
+                `只显示了前 ${CHIP_LIMIT} 个，还有 ${bookSize - CHIP_LIMIT} 个。用搜索或导出来看全部。`)
+              : null,
+
+            h(Input, {
               key: 'ta',
-              className: 'hds-textarea',
-              placeholder: '粘贴单词表，一行一个。有道的导出内容可以直接贴（每行第一个词会被识别）。',
+              multiline: true,
               value: importText,
-              onChange: (event) => setImportText(event.target.value),
+              placeholder: '粘贴单词表，一行一个。有道的导出内容可以直接贴（每行第一个词会被识别）。',
+              onChange: setImportText,
             }),
 
-            h('div', { key: 'btns', className: 'hds-row' }, [
-              h('button', {
-                key: 'import',
-                className: 'hds-btn hds-btn-primary',
-                type: 'button',
-                disabled: busy === 'import' || importText.trim() === '',
+            h('div', { key: 'btns', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
+              h(Button, {
+                key: 'import', label: '导入', variant: 'primary',
+                disabled: importText.trim() === '', busy: busy === 'import',
                 onClick: onImport,
-              }, busy === 'import' ? '导入中…' : '导入'),
-              h('button', {
-                key: 'export',
-                className: 'hds-btn',
-                type: 'button',
-                disabled: bookSize === 0,
-                onClick: onExport,
-              }, '导出为 txt'),
-              h('button', {
+              }),
+              h(Button, {
+                key: 'export', label: '导出为 txt',
+                disabled: bookSize === 0, onClick: onExport,
+              }),
+              h(Button, {
                 key: 'clear',
-                className: 'hds-btn hds-btn-danger',
-                type: 'button',
+                label: clearPending ? '确认清空' : '清空',
+                variant: clearPending ? 'primary' : 'danger',
                 disabled: busy === 'clear' || bookSize === 0,
                 onClick: onClear,
-              }, '清空'),
+              }),
+              clearPending
+                ? h(Button, {
+                  key: 'cancel', label: '取消', variant: 'ghost',
+                  onClick: () => { setClearPending(false); setMessage(null) },
+                })
+                : null,
             ]),
           ]),
 
     /* 显示 */
         section('ui', '显示', null, [
-          field('s1', '浮层释义条数', h('input', {
-            className: 'hds-input',
-            type: 'number',
-            min: 1,
-            max: 5,
-            value: ux.appearance.maxSensesInPopover,
-            onChange: (event) => patchAppearance('maxSensesInPopover', Number(event.target.value)),
-          })),
-          field('s2', '卡片宽度', h('input', {
-            className: 'hds-input',
-            type: 'number',
-            min: 240,
-            max: 720,
-            step: 20,
-            value: ux.appearance.cardMaxWidthPx,
-            onChange: (event) => patchAppearance('cardMaxWidthPx', Number(event.target.value)),
-          })),
-          h('div', { key: 's3', className: 'hds-field' }, [
-            h('span', { key: 'l', className: 'hds-label' }, '显示考纲标签'),
-            h('button', {
-              key: 'sw',
-              className: 'hds-switch',
-              type: 'button',
-              role: 'switch',
-              'aria-checked': ux.appearance.showTags !== false ? 'true' : 'false',
-              onClick: () => patchAppearance('showTags', ux.appearance.showTags === false),
-            }, [
-              h('span', { key: 'track', className: 'hds-switch-track', 'aria-hidden': 'true' }),
-              h('span', { key: 'text', className: 'hds-switch-text' },
-                ux.appearance.showTags !== false ? '显示' : '隐藏'),
-            ]),
-          ]),
+          field('s1', '浮层释义条数',
+            h(Input, {
+              type: 'number', value: String(ux.appearance.maxSensesInPopover),
+              onChange: (v) => patchAppearance('maxSensesInPopover', Number(v)),
+              style: { maxWidth: 110 },
+            })),
+          field('s2', '卡片宽度',
+            h(Input, {
+              type: 'number', value: String(ux.appearance.cardMaxWidthPx),
+              onChange: (v) => patchAppearance('cardMaxWidthPx', Number(v)),
+              style: { maxWidth: 130 },
+            })),
+          field('s3', '显示考纲标签',
+            h(Switch, {
+              checked: ux.appearance.showTags !== false,
+              onChange: (next) => patchAppearance('showTags', next),
+              label: ux.appearance.showTags !== false ? '显示' : '隐藏',
+            })),
         ]),
 
         message !== null
-          ? h('div', {
+          ? h(Note, {
             key: 'msg',
-            className: `hds-note hds-note-${message.tone === 'err' ? 'err' : message.tone === 'info' ? 'info' : 'ok'}`,
-          }, message.text)
+            tone: message.tone === 'err' ? 'err' : message.tone === 'info' ? 'info' : 'ok',
+            text: message.text,
+          })
           : null,
       ])
     }
 
-/**
- * 可下载的词库包清单。
- *
- * builtin 的三个是随包分发的，不能停用。
- * 其余按需下载——装了就参与查词，没装就查不到那部分词。
- */
     const WORD_PACKS = [
       { id: 'core', name: '核心词库', builtin: true, desc: '20,499 个考纲核心词：中考 / 高考 / 四六级 / 考研 / 托福 / 雅思 / GRE，每个词带词性、中文释义、英文释义与变音标注。' },
       { id: 'roots', name: '词根词缀库', builtin: true, desc: '6,374 个词的词根词缀拆解，来自 ECDICT 词根库（MIT）。' },
@@ -3699,250 +4526,12 @@ window.__ModuleLoader__.load({
       return () => { try { node.remove() } catch { /* ignore */ } }
     }
 
-/** 侧边栏图标组件。用 currentColor，跟随主题与选中态。 */
-    function PanelIcon(props) {
-      const size = props?.size ?? 20
-      return h('svg', {
-        width: size,
-        height: size,
-        viewBox: '0 0 24 24',
-        fill: 'none',
-        stroke: 'currentColor',
-        strokeWidth: 1.7,
-        strokeLinecap: 'round',
-        strokeLinejoin: 'round',
-        role: 'img',
-        'aria-label': '字典',
-      }, [
-        h('path', { key: 'l', d: 'M12 6.4C10.2 5.2 7.9 4.9 5.4 5.6v11.2c2.5-.7 4.8-.4 6.6.8' }),
-        h('path', { key: 'r', d: 'M12 6.4c1.8-1.2 4.1-1.5 6.6-.8v11.2c-2.5-.7-4.8-.4-6.6.8' }),
-        h('path', { key: 's', d: 'M12 6.4v11.2' }),
-        h('path', { key: 'a1', d: 'M8.2 13.6l1.5-3.4 1.5 3.4' }),
-        h('path', { key: 'a2', d: 'M8.7 12.6h2' }),
-        h('path', { key: 'r1', d: 'M14.6 9.2h2.6' }),
-        h('path', { key: 'r2', d: 'M14.6 11.8h2.6' }),
-      ])
-    }
-
-/** 面板页面的样式（比设置面板宽松，占满整列）。 */
-    const PANEL_CSS = `
-    .hdp-root {
-      display: flex;
-      flex-direction: column;
-      gap: 0;
-      color: var(--dsw-alias-label-primary, inherit);
-      font-size: 13px;
-    }
-    .hdp-head {
-      display: flex;
-      align-items: baseline;
-      gap: 8px;
-      padding: 12px 16px 8px;
-      border-bottom: .5px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2));
-    }
-    .hdp-title { font-weight: 600; font-size: 14px; }
-    .hdp-sub { color: var(--dsw-alias-label-tertiary, #888); font-size: 12px; }
-    .hdp-body {
-      padding: 14px 0 8px;
-    }
-    .hdp-tabs {
-      display: flex;
-      gap: 4px;
-      padding: 0 0 4px;
-      border-bottom: .5px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2));
-    }
-    .hdp-tab {
-      padding: 6px 12px;
-      border: none;
-      background: none;
-      color: var(--dsw-alias-label-tertiary, #888);
-      font: inherit;
-      cursor: pointer;
-      border-bottom: 2px solid transparent;
-      margin-bottom: -0.5px;
-    }
-    .hdp-tab:hover { color: var(--dsw-alias-label-secondary, #666); }
-    .hdp-tab[data-active] {
-      color: var(--dsw-alias-label-primary, inherit);
-      border-bottom-color: var(--dsw-alias-state-business-primary, #3b82f6);
-    }
-    .hdp-empty {
-      color: var(--dsw-alias-label-tertiary, #888);
-      text-align: center;
-      padding: 40px 16px;
-      line-height: 1.7;
-    }
-    .hdp-list { display: flex; flex-direction: column; gap: 2px; }
-    .hdp-item {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      padding: 8px 10px;
-      border-radius: var(--dsw-radius-sm, 6px);
-      cursor: pointer;
-    }
-    .hdp-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12)); }
-    .hdp-item-word { font-weight: 600; font-size: 14px; }
-    .hdp-item-zh {
-      flex: 1;
-      min-width: 0;
-      color: var(--dsw-alias-label-secondary, #666);
-      font-size: 12px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-    .hdp-item-x {
-      border: none;
-      background: none;
-      color: var(--dsw-alias-label-tertiary, #999);
-      cursor: pointer;
-      font-size: 14px;
-      line-height: 1;
-      padding: 2px 6px;
-      border-radius: 4px;
-    }
-    .hdp-item-x:hover {
-      background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.16));
-      color: var(--dsw-alias-state-error-primary, #e5484d);
-    }
-    .hdp-search {
-      width: 100%;
-      box-sizing: border-box;
-      padding: 6px 10px;
-      margin-bottom: 8px;
-      border-radius: var(--dsw-radius-sm, 6px);
-      border: .5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3));
-      background: var(--dsw-alias-bg-base, transparent);
-      color: inherit;
-      font: inherit;
-    }
-    `
-
-/** 插面板样式。 */
-    function ensurePanelStyle(doc) {
-      if (!doc || typeof doc.createElement !== 'function') return () => {}
-      const id = 'dsh-hover-dict/panel.css'
-      const selector = `style[data-plugin-css=${JSON.stringify(id)}]`
-      let node = doc.querySelector(selector)
-      if (node === null) {
-        node = doc.createElement('style')
-        node.dataset.pluginCss = id
-        node.textContent = PANEL_CSS
-        const head = doc.head ?? doc.documentElement
-        if (!head) return () => {}
-        head.appendChild(node)
-      } else if (node.textContent !== PANEL_CSS) {
-        node.textContent = PANEL_CSS
-      }
-      return () => { try { node.remove() } catch { /* ignore */ } }
-    }
-
-/**
- * 侧边栏面板：生词本 + 设置，一页看完。
- *
- * @param {object} props
- * @returns {import('react').ReactElement}
- */
-    function DictionaryPanel(props) {
-      const book = props?.wordbook
-      const dict = props?.dict
-      const [tab, setTab] = useState('book')
-      const [version, setVersion] = useState(0)
-      const [query, setQuery] = useState('')
-
-  // 订阅生词本变化
-      useEffect(() => {
-        if (!book || typeof book.subscribe !== 'function') return undefined
-        const off = book.subscribe(() => setVersion((n) => n + 1))
-        return () => { try { off() } catch { /* ignore */ } }
-      }, [book])
-
-      const words = book?.list?.() ?? []
-      const filtered = query.trim() === ''
-        ? words
-        : words.filter((item) => item.head.includes(query.trim().toLowerCase()))
-
-  /** 取一个词的中文简述，用于列表右侧。 */
-      const briefOfWord = (head) => {
-        if (!dict) return ''
-        const entry = dict.entries?.[head]
-        if (!Array.isArray(entry)) return ''
-        const groups = Array.isArray(entry[0]) ? entry[0] : []
-        for (const group of groups) {
-          const zh = Array.isArray(group?.[1]) ? group[1] : []
-          if (zh.length > 0) return zh.slice(0, 2).join('；')
-        }
-        return ''
-      }
-
-      const tabs = [
-        h('button', {
-          key: 'book', className: 'hdp-tab', type: 'button',
-          'data-active': tab === 'book' ? '' : undefined,
-          onClick: () => setTab('book'),
-        }, `生词本 ${words.length > 0 ? `(${words.length})` : ''}`),
-        h('button', {
-          key: 'settings', className: 'hdp-tab', type: 'button',
-          'data-active': tab === 'settings' ? '' : undefined,
-          onClick: () => setTab('settings'),
-        }, '设置'),
-      ]
-
-      const body = []
-
-      if (tab === 'book') {
-        if (words.length === 0) {
-          body.push(h('div', { key: 'empty', className: 'hdp-empty' },
-            '生词本还是空的。',
-            h('br'),
-            '在对话里点开一个词，点标题旁边那颗 ☆ 就能收进来。'))
-        } else {
-          body.push(h('input', {
-            key: 'q', className: 'hdp-search', type: 'text',
-            placeholder: `在 ${words.length} 个生词里搜…`,
-            value: query,
-            onChange: (event) => setQuery(event.target.value),
-          }))
-          body.push(h('div', { key: 'list', className: 'hdp-list' },
-            filtered.map((item) => h('div', {
-              key: item.head,
-              className: 'hdp-item',
-            },
-            h('span', { className: 'hdp-item-word' }, item.head),
-            h('span', { className: 'hdp-item-zh' }, briefOfWord(item.head)),
-            h('button', {
-              className: 'hdp-item-x', type: 'button', title: '移出',
-              onClick: (event) => {
-                event.stopPropagation()
-                book.remove(item.head)
-              },
-            }, '×'),
-            ))))
-          if (filtered.length === 0) {
-            body.push(h('div', { key: 'noresult', className: 'hdp-empty' }, '没有匹配的词'))
-          }
-        }
-      } else {
-        body.push(h(SettingsPanel, {
-          key: 'settings',
-          view: 'page',
-          wordbook: book,
-          apiPrefix: '/api/dsh-hover-dict',
-        }))
-      }
-
-      return h('div', { className: 'hdp-root' }, [
-        h('div', { key: 'tabs', className: 'hdp-tabs' }, tabs),
-        h('div', { key: 'body', className: 'hdp-body' }, body),
-      ])
-    }
-
-      return { SettingsPanel, WORD_PACKS, readPacks, writePacks, readTranslator, writeTranslator, translatorChain, ensureSettingsStyle, PanelIcon, ensurePanelStyle, DictionaryPanel }
+      return { SettingsPanel, WORD_PACKS, readPacks, writePacks, readTranslator, writeTranslator, translatorChain, ensureSettingsStyle }
     })()
 
     // ═══ card.js ═══
     var __mod_card = (function () {
+      var { attachDrag } = __mod_drag
 /**
  * card.js —— 点击单词后就地摊开的「大卡片」。
  *
@@ -4052,11 +4641,52 @@ window.__ModuleLoader__.load({
       const maxHeight = Math.round((typeof window !== 'undefined' ? window.innerHeight : 800)
         * (appearance.cardMaxHeightRatio ?? 0.7))
 
+  // 拖动状态：用户拖过之后，卡片位置由他决定，不再走自动摆放。
+      const [dragPos, setDragPos] = useState(null)
+      const panelRef = useRef(null)
+      const handleRef = useRef(null)
+
+  // 绑定拖动。位置变了就记住，下次开卡片沿用。
+      useEffect(() => {
+        const panel = panelRef.current
+        const handle = handleRef.current
+        if (!panel || !handle) return undefined
+        const viewport = {
+          width: typeof window !== 'undefined' ? window.innerWidth : 1200,
+          height: typeof window !== 'undefined' ? window.innerHeight : 800,
+        }
+        return attachDrag({
+          handle,
+          panel,
+          doc: panel.ownerDocument ?? document,
+          viewport,
+          onEnd: (pos) => {
+            setDragPos(pos)
+            props.onMoved?.(pos)
+          },
+          onClick: () => {
+        // 拖动把手上没移动就点击 → 回到自动位置
+            setDragPos(null)
+            props.onMoved?.(null)
+          },
+        })
+      }, [props])
+
+      const top = dragPos !== null ? dragPos.top : placement.top
+      const left = dragPos !== null ? dragPos.left : placement.left
+
       const children = []
 
   // 头部：词 + 星标。星标点亮表示这个词已在生词本里。
+  // 这一条同时是拖动把手 —— 顶部是自然的抓取位置。
       const inBook = props.inBook === true
-      children.push(h('div', { key: 'head', className: 'hd-word-row' },
+      children.push(h('div', {
+        key: 'head',
+        className: 'hd-word-row hd-drag-handle',
+        ref: handleRef,
+        title: '拖动可移动位置，单击回到原位',
+        style: { cursor: dragPos === null ? 'grab' : 'grab', userSelect: 'none' },
+      },
         h('span', {
           className: 'hd-word',
       // 当前词在生词本里 → 标题标红
@@ -4118,7 +4748,7 @@ window.__ModuleLoader__.load({
         // 已在生词本里的同根词仍标红（红优先于蓝），否则标蓝
             color: inBookSet.has(item.word)
               ? 'var(--dsw-alias-state-error-primary, #e5484d)'
-              : 'var(--dsw-alias-state-business-primary, #3b82f6)',
+              : 'var(--dsw-alias-brand-primary, #3b82f6)',
             cursor: 'pointer',
           },
           onMouseDown: (event) => { event.preventDefault(); event.stopPropagation() },
@@ -4163,9 +4793,10 @@ window.__ModuleLoader__.load({
 
       return h('div', {
         className: 'hd-card',
+        ref: panelRef,
         style: {
-          top: `${placement.top}px`,
-          left: `${placement.left}px`,
+          top: `${top}px`,
+          left: `${left}px`,
           width: `${appearance.cardMaxWidthPx ?? 420}px`,
           maxHeight: `${maxHeight}px`,
         },
@@ -4236,7 +4867,7 @@ window.__ModuleLoader__.load({
       var { wordAt, normalizeKey } = __mod_word
       var { createWordbook } = __mod_wordbook
       var { familyOf } = __mod_family
-      var { DictionaryPanel, ensurePanelStyle, readTranslator } = __mod_settings
+      var { ensureSettingsStyle, readTranslator, SettingsPanel } = __mod_settings
 /**
  * app.js —— 状态机与 slot 注册。整个浏览器半唯一的 apply / inject 出口。
  *
@@ -4918,7 +5549,7 @@ window.__ModuleLoader__.load({
     // order 决定排在哪儿。只登记这三个字段 —— 严格校验的宿主会因多余字段抛错，
     // 而 apply 一抛错整条 slot 就静默退役（导航项直接不出现）。
         try {
-          dispose.push(ensurePanelStyle(doc))
+          dispose.push(ensureSettingsStyle(doc))
 
       // wordbook 与 dict 都要懒取：注册发生时它们可能还没建好
       // （setupWordbook 是异步的，dict 要等词库加载完）。
@@ -4936,7 +5567,7 @@ window.__ModuleLoader__.load({
             order: 26,
             label: () => '英语翻译',
             inject: settingsProps,
-          }, DictionaryPanel)))
+          }, SettingsPanel)))
         } catch (error) {
           warn('设置页挂载失败（不影响查词）', error)
         }
@@ -5208,33 +5839,40 @@ window.__ModuleLoader__.load({
 
     // ── 纯函数透出给测试（不影响宿主） ──
     exports.API_PREFIX = __mod_net.API_PREFIX
+    exports.C = __mod_ui.C
     exports.CardRoot = __mod_card.CardRoot
     exports.DEFAULT_APPEARANCE = __mod_config.DEFAULT_APPEARANCE
     exports.DEFAULT_TIMING = __mod_config.DEFAULT_TIMING
     exports.DEFAULT_UX = __mod_config.DEFAULT_UX
-    exports.DictionaryPanel = __mod_settings.DictionaryPanel
+    exports.DRAG_THRESHOLD_PX = __mod_drag.DRAG_THRESHOLD_PX
+    exports.EASE = __mod_ui.EASE
     exports.Examples = __mod_card.Examples
+    exports.FS = __mod_ui.FS
+    exports.GAP = __mod_ui.GAP
     exports.HIT_BLOCKERS = __mod_hit.HIT_BLOCKERS
     exports.MAX_SELECTION_CHARS = __mod_selection.MAX_SELECTION_CHARS
     exports.MAX_WORD_LEN = __mod_word.MAX_WORD_LEN
     exports.OverlayHost = __mod_app.OverlayHost
-    exports.PanelIcon = __mod_settings.PanelIcon
     exports.PhraseBody = __mod_overlay.PhraseBody
     exports.PopoverBody = __mod_overlay.PopoverBody
+    exports.RADIUS = __mod_ui.RADIUS
     exports.SELECTORS = __mod_hit.SELECTORS
     exports.STORAGE_KEY = __mod_config.STORAGE_KEY
     exports.SenseGroups = __mod_card.SenseGroups
     exports.SettingsPanel = __mod_settings.SettingsPanel
     exports.StatusNote = __mod_overlay.StatusNote
     exports.UI_ATTR = __mod_overlay.UI_ATTR
+    exports.VIEWPORT_PAD = __mod_drag.VIEWPORT_PAD
     exports.WORD_PACKS = __mod_settings.WORD_PACKS
     exports.anchorOf = __mod_anchor.anchorOf
+    exports.attachDrag = __mod_drag.attachDrag
     exports.briefOf = __mod_dict.briefOf
     exports.buildIndex = __mod_dict.buildIndex
     exports.caretAt = __mod_hit.caretAt
     exports.caretAtPoint = __mod_selection.caretAtPoint
     exports.clampAppearance = __mod_config.clampAppearance
     exports.clampTiming = __mod_config.clampTiming
+    exports.clampToViewport = __mod_drag.clampToViewport
     exports.classifySelection = __mod_selection.classifySelection
     exports.computeCardPlacement = __mod_position.computeCardPlacement
     exports.computeOverlayRect = __mod_position.computeOverlayRect
@@ -5243,12 +5881,13 @@ window.__ModuleLoader__.load({
     exports.createHoverMachine = __mod_app.createHoverMachine
     exports.createWordbook = __mod_wordbook.createWordbook
     exports.describeEntry = __mod_dict.describeEntry
-    exports.ensurePanelStyle = __mod_settings.ensurePanelStyle
+    exports.dragPosition = __mod_drag.dragPosition
     exports.ensureSettingsStyle = __mod_settings.ensureSettingsStyle
     exports.ensureStyle = __mod_overlay.ensureStyle
     exports.familyOf = __mod_family.familyOf
     exports.fetchAsset = __mod_net.fetchAsset
     exports.hanRatio = __mod_selection.hanRatio
+    exports.hintStyle = __mod_ui.hintStyle
     exports.hitsAny = __mod_selection.hitsAny
     exports.humanizeError = __mod_net.humanizeError
     exports.inflectionsOf = __mod_family.inflectionsOf
@@ -5261,6 +5900,7 @@ window.__ModuleLoader__.load({
     exports.loadDictionary = __mod_dict.loadDictionary
     exports.loadUx = __mod_config.loadUx
     exports.lookup = __mod_dict.lookup
+    exports.makePrimitives = __mod_ui.makePrimitives
     exports.nodeIdentity = __mod_anchor.nodeIdentity
     exports.normalizeKey = __mod_word.normalizeKey
     exports.parseForms = __mod_dict.parseForms
@@ -5277,6 +5917,7 @@ window.__ModuleLoader__.load({
     exports.splitExample = __mod_card.splitExample
     exports.stemCandidates = __mod_word.stemCandidates
     exports.stemVariants = __mod_family.stemVariants
+    exports.sx = __mod_ui.sx
     exports.tagLabel = __mod_config.tagLabel
     exports.translatorChain = __mod_settings.translatorChain
     exports.unionOf = __mod_selection.unionOf

@@ -57,6 +57,31 @@ const CSS = `
   flex-direction: column;
   gap: 10px;
 }
+[${UI_ATTR}] .hd-drag-handle {
+  cursor: grab;
+  user-select: none;
+  margin: -6px -8px 0;
+  padding: 6px 8px 0;
+  border-radius: 8px 8px 0 0;
+  transition: background-color .14s ease;
+}
+[${UI_ATTR}] .hd-drag-handle:hover {
+  background: rgba(127,127,127,.08);
+}
+[${UI_ATTR}] .hd-drag-handle:active {
+  cursor: grabbing;
+  background: rgba(127,127,127,.14);
+}
+/* 把手上的小提示：六点抓取纹，让人一眼看出这条能拖 */
+[${UI_ATTR}] .hd-drag-handle::before {
+  content: "";
+  display: block;
+  width: 26px;
+  height: 3px;
+  margin: 0 auto 6px;
+  border-radius: 2px;
+  background: rgba(127,127,127,.36);
+}
 [${UI_ATTR}] .hd-word-row {
   display: flex;
   align-items: center;
@@ -70,10 +95,10 @@ const CSS = `
   line-height: 1;
   padding: 2px 4px;
   border-radius: 4px;
-  color: var(--dsw-alias-label-tertiary, #999);
+  color: var(--dsw-alias-label-secondary, #999);
 }
 [${UI_ATTR}] .hd-star:hover {
-  background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.14));
+  background: var(--dsw-alias-bg-layer-1, rgba(127,127,127,.14));
 }
 [${UI_ATTR}] .hd-star-on {
   color: var(--dsw-alias-state-warn-primary, #f5a623);
@@ -104,7 +129,7 @@ const CSS = `
   font-family: var(--ds-font-family-code, monospace);
 }
 [${UI_ATTR}] .hd-root-origin {
-  color: var(--dsw-alias-label-tertiary, #999);
+  color: var(--dsw-alias-label-secondary, #999);
   font-size: .86em;
 }
 [${UI_ATTR}] .hd-word {
@@ -119,7 +144,7 @@ const CSS = `
 }
 [${UI_ATTR}] .hd-pos {
   flex: none;
-  color: var(--dsw-alias-label-tertiary, #888);
+  color: var(--dsw-alias-label-secondary, #888);
   font-size: .88em;
   font-style: italic;
   min-width: 2.6em;
@@ -143,11 +168,11 @@ const CSS = `
   white-space: nowrap;
 }
 [${UI_ATTR}] .hd-more {
-  color: var(--dsw-alias-label-tertiary, #888);
+  color: var(--dsw-alias-label-secondary, #888);
   font-size: .85em;
 }
 [${UI_ATTR}] .hd-note {
-  color: var(--dsw-alias-label-tertiary, #888);
+  color: var(--dsw-alias-label-secondary, #888);
   font-size: .88em;
   cursor: pointer;
   text-decoration: underline dotted;
@@ -159,7 +184,7 @@ const CSS = `
   right: 10px;
   border: none;
   background: transparent;
-  color: var(--dsw-alias-label-tertiary, #888);
+  color: var(--dsw-alias-label-secondary, #888);
   cursor: pointer;
   font-size: 15px;
   line-height: 1;
@@ -167,10 +192,10 @@ const CSS = `
   border-radius: 4px;
 }
 [${UI_ATTR}] .hd-close:hover {
-  background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12));
+  background: var(--dsw-alias-bg-layer-1, rgba(127,127,127,.12));
 }
 [${UI_ATTR}] .hd-section {
-  color: var(--dsw-alias-label-tertiary, #888);
+  color: var(--dsw-alias-label-secondary, #888);
   font-size: .84em;
   margin-bottom: -4px;
 }
@@ -193,7 +218,7 @@ const CSS = `
 }
 [${UI_ATTR}] .hd-hit {
   font-weight: 600;
-  color: var(--dsw-alias-link, inherit);
+  color: var(--dsw-alias-brand-primary, inherit);
 }
 `
 

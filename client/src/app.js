@@ -19,7 +19,7 @@ import { SELECTORS } from './hit.js'
 import { wordAt, normalizeKey } from './word.js'
 import { createWordbook } from './wordbook.js'
 import { familyOf } from './family.js'
-import { DictionaryPanel, ensurePanelStyle, readTranslator } from './settings.js'
+import { ensureSettingsStyle, readTranslator, SettingsPanel } from './settings.js'
 
 /** 设置页里那个导航项的稳定键。改它等于让用户已记住的入口位置失效。 */
 const SETTINGS_SECTION_ID = 'hover-dict'
@@ -691,7 +691,7 @@ export function apply(ctx) {
     // order 决定排在哪儿。只登记这三个字段 —— 严格校验的宿主会因多余字段抛错，
     // 而 apply 一抛错整条 slot 就静默退役（导航项直接不出现）。
     try {
-      dispose.push(ensurePanelStyle(doc))
+      dispose.push(ensureSettingsStyle(doc))
 
       // wordbook 与 dict 都要懒取：注册发生时它们可能还没建好
       // （setupWordbook 是异步的，dict 要等词库加载完）。
@@ -709,7 +709,7 @@ export function apply(ctx) {
         order: 26,
         label: () => '英语翻译',
         inject: settingsProps,
-      }, DictionaryPanel)))
+      }, SettingsPanel)))
     } catch (error) {
       warn('设置页挂载失败（不影响查词）', error)
     }

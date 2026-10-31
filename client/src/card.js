@@ -7,6 +7,7 @@
  * 卡片是**就地**弹的（不是右侧栏）：用户点一个词，眼睛就在那个词上，
  * 把他拽到别处会丢上下文。代价是卡片会压住正文，所以它可关闭、可固定、有高度上限。
  */
+import { attachDrag } from './drag.js'
 
 /** 词根类型 → 中文。 */
 const TYPE_LABELS = {
@@ -107,11 +108,52 @@ export function CardRoot(props) {
   const maxHeight = Math.round((typeof window !== 'undefined' ? window.innerHeight : 800)
     * (appearance.cardMaxHeightRatio ?? 0.7))
 
+  // 拖动状态：用户拖过之后，卡片位置由他决定，不再走自动摆放。
+  const [dragPos, setDragPos] = useState(null)
+  const panelRef = useRef(null)
+  const handleRef = useRef(null)
+
+  // 绑定拖动。位置变了就记住，下次开卡片沿用。
+  useEffect(() => {
+    const panel = panelRef.current
+    const handle = handleRef.current
+    if (!panel || !handle) return undefined
+    const viewport = {
+      width: typeof window !== 'undefined' ? window.innerWidth : 1200,
+      height: typeof window !== 'undefined' ? window.innerHeight : 800,
+    }
+    return attachDrag({
+      handle,
+      panel,
+      doc: panel.ownerDocument ?? document,
+      viewport,
+      onEnd: (pos) => {
+        setDragPos(pos)
+        props.onMoved?.(pos)
+      },
+      onClick: () => {
+        // 拖动把手上没移动就点击 → 回到自动位置
+        setDragPos(null)
+        props.onMoved?.(null)
+      },
+    })
+  }, [props])
+
+  const top = dragPos !== null ? dragPos.top : placement.top
+  const left = dragPos !== null ? dragPos.left : placement.left
+
   const children = []
 
   // 头部：词 + 星标。星标点亮表示这个词已在生词本里。
+  // 这一条同时是拖动把手 —— 顶部是自然的抓取位置。
   const inBook = props.inBook === true
-  children.push(h('div', { key: 'head', className: 'hd-word-row' },
+  children.push(h('div', {
+    key: 'head',
+    className: 'hd-word-row hd-drag-handle',
+    ref: handleRef,
+    title: '拖动可移动位置，单击回到原位',
+    style: { cursor: dragPos === null ? 'grab' : 'grab', userSelect: 'none' },
+  },
     h('span', {
       className: 'hd-word',
       // 当前词在生词本里 → 标题标红
@@ -173,7 +215,7 @@ export function CardRoot(props) {
         // 已在生词本里的同根词仍标红（红优先于蓝），否则标蓝
         color: inBookSet.has(item.word)
           ? 'var(--dsw-alias-state-error-primary, #e5484d)'
-          : 'var(--dsw-alias-state-business-primary, #3b82f6)',
+          : 'var(--dsw-alias-brand-primary, #3b82f6)',
         cursor: 'pointer',
       },
       onMouseDown: (event) => { event.preventDefault(); event.stopPropagation() },
@@ -218,9 +260,10 @@ export function CardRoot(props) {
 
   return h('div', {
     className: 'hd-card',
+    ref: panelRef,
     style: {
-      top: `${placement.top}px`,
-      left: `${placement.left}px`,
+      top: `${top}px`,
+      left: `${left}px`,
       width: `${appearance.cardMaxWidthPx ?? 420}px`,
       maxHeight: `${maxHeight}px`,
     },

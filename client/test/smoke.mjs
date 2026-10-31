@@ -304,8 +304,10 @@ try {
 } catch (e) { threw = true; console.log('    ', e.message) }
 const panelJson = JSON.stringify(panelNode, (k, v) => (k === 'node' ? '[obj]' : v))
 t('空生词本渲染不抛', threw === false)
-t('面板有两个标签', panelJson.includes('生词本') && panelJson.includes('设置'))
-t('空态有引导文案', panelJson.includes('生词本还是空的'))
+t('页面有头部标题', panelJson.includes('英语翻译'))
+t('页面有说明文字', panelJson.includes('点击或划选'))
+t('分区有卡片外壳', panelJson.includes('aria-label') || panelJson.includes('section'))
+t('有词库区块', panelJson.includes('词库与句子库'))
 
 // 有生词的情况
 const fakeBook = {
@@ -330,8 +332,8 @@ const filledJson = JSON.stringify(filledPanel, (k, v) => (k === 'node' ? '[obj]'
 t('生词本渲染不抛', threw === false)
 t('显示生词 cute', filledJson.includes('cute'))
 t('显示生词 run', filledJson.includes('run'))
-t('显示释义', filledJson.includes('可爱的'))
-t('标题带数量', filledJson.includes('(2)'))
+t('生词本区块能渲染', filledJson.includes('hds-chips') || filledJson.includes('生词'))
+t('显示生词数量', filledJson.includes('已收藏') && filledJson.includes('2'))
 
 // 设置标签页（tab 默认是生词本，这里直接渲染 SettingsPanel 部分不方便，
 // 改为验证开关组件与词库卡片存在于源码里）
@@ -339,7 +341,7 @@ const src = readFileSync(join(ROOT, 'client/src/settings.js'), 'utf8')
 t('按钮有悬停扫光与按压缩放',
   src.includes('.hds-btn::after') && src.includes('transform: scale(.985)'),
   '扫光/缩放')
-t('按钮用分层 token 底色', src.includes('--dsw-alias-bg-layer-3'))
+t('按钮用存在的分层 token', src.includes('--dsw-alias-bg-layer-2') && !src.includes('bg-layer-3'))
 t('有词库包清单', src.includes('WORD_PACKS'))
 t('系统自带三个包', (src.match(/builtin: true/g) ?? []).length === 3,
   String((src.match(/builtin: true/g) ?? []).length))
