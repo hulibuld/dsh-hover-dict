@@ -28,6 +28,52 @@ const HAS_MULTIPLE_WORDS = /[A-Za-z][^\s]*\s+[^\s]*[A-Za-z]/
 /** 至少有一个拉丁字母。 */
 const HAS_LATIN = /[A-Za-z]/
 
+/** 汉字（含扩展区）。 */
+const HAS_HAN = /[\u4e00-\u9fff\u3400-\u4dbf]/
+
+/**
+ * 选中内容里汉字占「汉字 + 拉丁字母」的比例上限。
+ *
+ * 超过这个比例就不翻译。用户要的是「全英文才翻译」，
+ * 但留一点余量：正文里偶尔夹一个中文词（人名、术语）不该让整段失效。
+ *
+ * 实测几种典型内容：
+ *   纯英文句子        0%
+ *   英文带个别中文词   8%
+ *   中英混排          50%
+ *   中文为主偶有英文   64%
+ * 取 10% 能把后两种挡掉，又不误伤「This is a test 测试」这种顺带夹一个词的。
+ */
+const MAX_HAN_RATIO = 0.10
+
+/**
+ * 数一下汉字相对拉丁字母的占比。
+ *
+ * @param {string} text
+ * @returns {number} 0–1；没有字母也没有汉字时返回 1（当作不该翻译）
+ */
+export function hanRatio(text) {
+  if (typeof text !== 'string' || text === '') return 1
+  const han = (text.match(new RegExp(HAS_HAN.source, 'g')) ?? []).length
+  const latin = (text.match(/[A-Za-z]/g) ?? []).length
+  const total = han + latin
+  if (total === 0) return 1
+  return han / total
+}
+
+/**
+ * 判断一段文本是不是「够纯的英文」，可以走翻译。
+ *
+ * 单词查询不走这条判断 —— 单个词本来就不会含中文。
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function isTranslatable(text) {
+  if (!HAS_LATIN.test(text)) return false
+  return hanRatio(text) <= MAX_HAN_RATIO
+}
+
 /**
  * 选中内容的处理结果。
  *
@@ -57,6 +103,15 @@ export function classifySelection(raw) {
     const key = normalizeKey(text)
     if (key.length === 0 || key.length > MAX_WORD_CHARS) return null
     return { kind: 'word', key }
+  }
+
+  // 中英混排：先判这一条，再判「是不是多词短语」。
+  //
+  // 顺序很重要：像「这个 tokenizers 的分词」这种，两个英文词之间夹着中文，
+  // 用「词与词只隔空白」的正则根本匹配不上，会一路掉到最后的 null，
+  // 界面就完全没反应。先按汉字占比拦下来，才能给出「跳过」的明确结果。
+  if (HAS_HAN.test(text) && !isTranslatable(text)) {
+    return { kind: 'skip', reason: 'mixed-language', text }
   }
 
   if (HAS_MULTIPLE_WORDS.test(text)) {

@@ -116,6 +116,8 @@ export function apply(ctx) {
       translation: null,
       translating: false,
       translateError: '',
+      /** skip 时的提示文字 */
+      notice: '',
       placement: null,
       listeners: new Set(),
       /** 生词本实例与它的版本号（用来触发重渲染） */
@@ -274,6 +276,17 @@ export function apply(ctx) {
       runtime.translation = null
       runtime.translateError = ''
       runtime.translating = false
+      runtime.notice = ''
+
+      // 中英混排：不翻译，但给一句提示。
+      // 完全静默会让用户以为插件坏了——他们明明选中了东西。
+      if (selection.kind === 'skip') {
+        runtime.mode = 'notice'
+        runtime.notice = '选中的内容中英混排，只翻译纯英文'
+        runtime.placement = placeFor('popover', bounds)
+        notify()
+        return
+      }
 
       if (selection.kind === 'word') {
         const hit = lookupWord(selection.key)
@@ -338,6 +351,7 @@ export function apply(ctx) {
       runtime.result = null
       runtime.entryRaw = null
       runtime.translation = null
+      runtime.notice = ''
       runtime.placement = null
       machine.feed({ kind: 'dismiss' })
       notify()
@@ -590,6 +604,7 @@ export function apply(ctx) {
         translation: runtime.translation,
         translating: runtime.translating,
         translateError: runtime.translateError,
+        notice: runtime.notice,
         placement: runtime.placement,
         status: runtime.status,
         errorMessage: runtime.errorMessage,
@@ -758,7 +773,7 @@ export function OverlayHost(props) {
     if (!snapshot) return null
     const {
       mode, selection, result, entryRaw, translation, translating, translateError,
-      placement, ux, status, errorMessage, inBook, inBookSet, family, roots,
+      placement, ux, status, errorMessage, inBook, inBookSet, family, roots, notice,
     } = snapshot
     const actions = props.actions ?? {}
     const children = []
@@ -803,6 +818,20 @@ export function OverlayHost(props) {
         onToggleStar: () => actions.onToggleStar?.(),
         onSelectWord: (word) => actions.onSelectWord?.(word),
       }))
+    }
+
+    if (mode === 'notice' && placement && notice) {
+      children.push(h('div', {
+        key: 'notice',
+        className: 'hd-pop',
+        style: {
+          top: `${placement.top}px`,
+          left: `${placement.left}px`,
+          pointerEvents: 'auto',
+          color: 'var(--dsw-alias-label-secondary, #666)',
+        },
+        onMouseDown: (event) => { event.preventDefault(); event.stopPropagation() },
+      }, h('div', { className: 'hd-more' }, notice)))
     }
 
     if (mode === 'phrase' && placement) {

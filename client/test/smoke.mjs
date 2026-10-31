@@ -267,5 +267,25 @@ try { loadingNode = component({ store: loadingStore, actions: {}, tagLabel: (x) 
 const loadingJson = JSON.stringify(loadingNode, (k, v) => (k === 'node' ? '[obj]' : v))
 t('翻译中显示提示', loadingJson.includes('翻译中'))
 
+// 中英混排提示
+const noticeStore = {
+  getSnapshot: () => ({
+    mode: 'notice',
+    selection: { kind: 'skip', reason: 'mixed-language', text: '这个 tokenizers 的分词', rects: [{left:100,top:200,right:300,bottom:220,width:200,height:20}] },
+    result: null, entryRaw: null, translation: null, translating: false, translateError: '',
+    notice: '选中的内容中英混排，只翻译纯英文',
+    placement: { top: 226, left: 100, placement: 'bottom', clamped: false },
+    status: 'ready', errorMessage: '',
+    ux: { timing: {}, appearance: { cardMaxWidthPx: 420, cardMaxHeightRatio: 0.7 } },
+  }),
+  subscribe: () => () => {},
+}
+let noticeNode = null
+threw = false
+try { noticeNode = component({ store: noticeStore, actions: {}, tagLabel: (x) => x }) } catch (e) { threw = true }
+const noticeJson = JSON.stringify(noticeNode, (k, v) => (k === 'node' ? '[obj]' : v))
+t('混排提示渲染不抛', threw === false)
+t('混排提示有文案', noticeJson.includes('只翻译纯英文'))
+
 console.log(`\n================ ${pass}/${pass + fail} 通过 ================`)
 if (fail > 0) process.exit(1)
