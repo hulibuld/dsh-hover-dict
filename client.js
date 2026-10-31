@@ -3576,6 +3576,7 @@ window.__ModuleLoader__.load({
       var { ensureStyle, PopoverBody, PhraseBody, UI_ATTR } = __mod_overlay
       var { CardRoot } = __mod_card
       var { caretAtPoint, rangeRects, readSelection, unionOf } = __mod_selection
+      var { SELECTORS } = __mod_hit
       var { wordAt, normalizeKey } = __mod_word
       var { createWordbook } = __mod_wordbook
       var { familyOf } = __mod_family
@@ -3880,6 +3881,9 @@ window.__ModuleLoader__.load({
         const pickWordAt = (x, y) => {
           const caret = caretAtPoint(doc, x, y)
           if (caret === null) return false
+      // 只处理对话正文里的字
+          if (!inChatRegion(caret.node.parentElement)) return false
+          if (inComposer(caret.node.parentElement)) return false
       // preferLeft：点在词的最后一个字母右半边时 offset 会等于词尾，
       // 不向左借一格就取不到词。
           const hit = wordAt(caret.node.data, caret.offset, { preferLeft: true })
@@ -3915,6 +3919,71 @@ window.__ModuleLoader__.load({
         let downSelectionText = ''
         let lastText = ''
 
+    /**
+     * 判断一个元素是否在「对话正文」区域内。
+     *
+     * 只有这里才查词。输入框、右下角的模型选择器、侧栏、设置页
+     * 都属于各自的 `data-conversation-region`，一律不处理 ——
+     * 在输入框里点一下想定位光标，不该弹出词典。
+     *
+     * 判定用祖先链查找：从事件目标往上找 `[data-conversation-region="chat"]`。
+     * 找不到就不在正文里。
+     */
+    /** 取当前选区的起始节点（用来判断选区在哪个区域里）。 */
+        const currentSelectionNode = (d) => {
+          try {
+            const sel = d.getSelection?.()
+            if (!sel || sel.rangeCount === 0) return null
+            const range = sel.getRangeAt(0)
+            const node = range.startContainer
+            if (node === null) return null
+            return node.nodeType === 1 ? node : node.parentElement
+          } catch {
+            return null
+          }
+        }
+
+        const inChatRegion = (node) => {
+          if (!node || typeof node.closest !== 'function') return false
+          try {
+            return node.closest(SELECTORS.chatRegion) !== null
+          } catch {
+            return false
+          }
+        }
+
+    /**
+     * 输入框与它周围那一排控件（含右下角的模型选择器）一律排除。
+     *
+     * 逐个选择器单独判，不写成一个带逗号的大选择器：
+     * 一是失败时好定位是哪一条命中，二是 `closest` 对复杂选择器的支持
+     * 各浏览器不完全一致，拆开更稳。
+     */
+        const COMPOSER_MARKERS = [
+          SELECTORS.composerRegion,
+          '[data-composer-seat]',
+          '[data-composer-stat]',
+          '[data-composer-height]',
+          'form',
+          'textarea',
+          'input',
+          '[contenteditable="true"]',
+          '[contenteditable=""]',
+          '[role="textbox"]',
+        ]
+
+        const inComposer = (node) => {
+          if (!node || typeof node.closest !== 'function') return false
+          for (const selector of COMPOSER_MARKERS) {
+            try {
+              if (node.closest(selector) !== null) return true
+            } catch {
+          // 选择器不合法就跳过，不要让一条坏规则带走整个判定
+            }
+          }
+          return false
+        }
+
         const insideSelf = (target) => Boolean(
           target && typeof target.closest === 'function' && target.closest(SELF_SELECTOR) !== null,
         )
@@ -3923,6 +3992,11 @@ window.__ModuleLoader__.load({
         const trySelection = () => {
           const selection = readSelection(doc)
           if (selection === null || selection.collapsed) return false
+      // 选区必须落在对话正文里。输入框里选中文字是想复制或替换，不是查词。
+          const anchorNode = currentSelectionNode(doc)
+          if (anchorNode === null) return false
+          if (!inChatRegion(anchorNode)) return false
+          if (inComposer(anchorNode)) return false
           if (selection.text === lastText && runtime.mode !== 'none') return true
           lastText = selection.text
           applySelection(selection)
