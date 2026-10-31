@@ -33,7 +33,8 @@ const record = (name, ok, detail) => {
 /** 起一个服务器，返回 { origin, close }。 */
 async function serve(options) {
   const assets = createAssetResolver({ dataDir: DATA_DIR, maxBytesPerFile: 32 * 1024 * 1024 })
-  const handler = createHandler({ assets, config: { enabled: true, ...options } })
+  const { llm: injectedLlm, ...rest } = options ?? {}
+  const handler = createHandler({ assets, llm: injectedLlm, config: { enabled: true, ...rest } })
   const server = createServer((req, res) => { void handler(req, res) })
   await new Promise((done) => server.listen(0, '127.0.0.1', done))
   const { port } = server.address()
@@ -202,7 +203,68 @@ async function main() {
     await server.close()
   }
 
-  console.log('\n[7] 词库缺失与禁用')
+  console.log('\n[6.5] 句子翻译')
+
+// 假 llm：把输入原样回显成「译文」，用来验证路由与流式拼装
+const fakeLlm = {
+  listProviders: () => [{ id: 'deepseek' }],
+  listModels: async () => [{ id: 'deepseek-chat' }],
+  async *stream(options) {
+    const userText = options.messages?.[0]?.content?.[0]?.text ?? ''
+    // 只回显最后一段（原文）
+    const source = userText.split('\n').filter(Boolean).pop() ?? ''
+    yield { type: 'block-start', index: 0, blockType: 'text' }
+    yield { type: 'text-delta', index: 0, text: `【译】${source}` }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  },
+}
+
+const translateServer = await serve({ llm: fakeLlm })
+try {
+  const res = await fetch(`${translateServer.origin}/translate`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: 'The quick brown fox' }),
+  })
+  const body = await res.json()
+  record('POST translate → 200', res.status === 200, `status=${res.status}`)
+  record('翻译结果包含原文', typeof body?.text === 'string' && body.text.includes('The quick brown fox'),
+    body?.text)
+
+  const empty = await fetch(`${translateServer.origin}/translate`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '' }),
+  })
+  const emptyBody = await empty.json()
+  record('空文本 → 400', empty.status === 400, `status=${empty.status}`)
+  record('空文本错误码正确', emptyBody?.error?.code === 'E_EMPTY_TEXT', emptyBody?.error?.code)
+
+  const long = await fetch(`${translateServer.origin}/translate`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: 'a'.repeat(2000) }),
+  })
+  const longBody = await long.json()
+  record('超长文本 → 400', long.status === 400, `status=${long.status}`)
+  record('超长错误码正确', longBody?.error?.code === 'E_TOO_LONG', longBody?.error?.code)
+} finally {
+  await translateServer.close()
+}
+
+// 没有 llm 服务时
+const noLlmServer = await serve({})
+try {
+  const res = await fetch(`${noLlmServer.origin}/translate`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: 'hello world' }),
+  })
+  const body = await res.json()
+  record('无 llm 服务 → 503', res.status === 503, `status=${res.status}`)
+  record('无 llm 错误码是 E_NO_LLM', body?.error?.code === 'E_NO_LLM', body?.error?.code)
+  record('无 llm 时查词仍可用', (await fetch(`${noLlmServer.origin}/meta.json`)).status === 200)
+} finally {
+  await noLlmServer.close()
+}
+
+console.log('\n[7] 词库缺失与禁用')
 
   const backup = join(tmpdir(), `dsh-hover-dict-data-${process.pid}`)
   renameSync(DATA_DIR, backup)

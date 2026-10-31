@@ -1,7 +1,7 @@
 {
   "meta": {
-    "title": "Hover dictionary",
-    "description": "Hover an English word in an assistant reply or its reasoning to see its part of speech and Chinese meaning; click to expand the full entry in place. Offline dictionary, no network, no API key."
+    "title": "English Reading Aid",
+    "description": "Click or select an English word in the conversation to see its meaning; select a pure-English sentence to translate into Chinese. Includes a wordbook, root analysis, and word-family highlighting."
   },
   "popover": {
     "loading": "Loading dictionary…",

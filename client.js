@@ -3009,7 +3009,9 @@ window.__ModuleLoader__.load({
  * @returns {import('react').ReactElement | null}
  */
     function SettingsPanel(props) {
-  // summary 视图只显示一行摘要，不要渲染整个表单
+  // 只有当宿主**明确**说这是 summary 视图时才走摘要分支。
+  // 不能写成 `view !== 'page'`：宿主在某些版本里可能根本不传 view，
+  // 那样整个面板会一直显示成一行的摘要，用户以为没装。
       if (props?.view === 'summary') {
         return h('div', { className: 'hds-hint' }, '英语翻译设置 · 生词本、翻译接口、离线词库')
       }
@@ -3635,7 +3637,7 @@ window.__ModuleLoader__.load({
       var { wordAt, normalizeKey } = __mod_word
       var { createWordbook } = __mod_wordbook
       var { familyOf } = __mod_family
-      var { ensureSettingsStyle, readTranslator, SettingsPanel, translatorChain } = __mod_settings
+      var { ensureSettingsStyle, readTranslator, SettingsPanel } = __mod_settings
 /**
  * app.js —— 状态机与 slot 注册。整个浏览器半唯一的 apply / inject 出口。
  *
@@ -3720,7 +3722,19 @@ window.__ModuleLoader__.load({
           warn('样式注入失败', error)
         }
 
-        if (!ctx || !ctx.slots || typeof ctx.slots.inject !== 'function') {
+    // 取 slots 优先用 ctx.get（安全探测），取不到再退回属性访问。
+    //
+    // 两条都要留：ctx.get 是 Cordis 的安全探测方式，但测试桩、某些老版本
+    // 或极简 ctx 上可能只有属性、没有 get 方法；反过来，直接读 ctx.slots
+    // 在没 inject 声明时会抛错。所以 get 在先、属性兜底，各自 try/catch。
+        let slots
+        if (typeof ctx?.get === 'function') {
+          try { slots = ctx.get('slots') } catch { slots = undefined }
+        }
+        if (slots === undefined) {
+          try { slots = ctx.slots } catch { slots = undefined }
+        }
+        if (!ctx || !slots || typeof slots.inject !== 'function') {
           warn('宿主没有提供 slots 服务，查词功能不挂载')
           try { disposeStyle() } catch { /* ignore */ }
           return
@@ -3829,7 +3843,13 @@ window.__ModuleLoader__.load({
           }
         }
 
-    /** 翻译一句话。取不到翻译服务时给出可读提示，不影响查词。 */
+    /**
+     * 翻译一句话。
+     *
+     * 走宿主自己的 `/api/dsh-hover-dict/translate` 路由，由宿主用 llm 服务调模型。
+     * 不用 @deepseek-ai/dsh-experimental-translator 是因为那个 bundle 默认关闭，
+     * 用户没开会一直报错。
+     */
         const translatePhrase = async (text) => {
           if (translateAbort) { try { translateAbort.abort() } catch { /* ignore */ } }
           const controller = new AbortController()
@@ -3839,45 +3859,27 @@ window.__ModuleLoader__.load({
           runtime.translation = null
           notify()
 
+          const preference = readTranslator(storage)
+          if (preference === 'off') {
+            runtime.translating = false
+            runtime.translateError = '句子翻译已在设置里关闭'
+            notify()
+            return
+          }
+
           try {
-            let translator = ctx?.translator
-            if (translator === undefined && typeof ctx?.get === 'function') {
-              try { translator = ctx.get('translator') } catch { translator = undefined }
-            }
-            const translate = translator && typeof translator.translate === 'function'
-              ? translator.translate.bind(translator)
-              : undefined
-            if (typeof translate !== 'function') {
-              throw new Error('这个版本的宿主没有提供翻译服务')
-            }
-
-            const chain = translatorChain(readTranslator(storage))
-            if (chain.length === 0) throw new Error('句子翻译已在设置里关闭')
-
-            let outcome = null
-            let lastError = null
-            for (const provider of chain) {
-              try {
-                outcome = await translate({
-                  provider,
-                  text,
-                  sourceLanguage: 'en',
-                  targetLanguage: 'zh-CN',
-                  recipe: 'sentence',
-                }, controller.signal)
-                if (outcome !== null && outcome !== undefined) break
-              } catch (error) {
-                lastError = error
-                if (controller.signal.aborted) throw error
-              }
-            }
-            if (outcome === null || outcome === undefined) {
-              throw lastError ?? new Error('翻译没有返回结果')
-            }
+            const response = await fetch('/api/dsh-hover-dict/translate', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ text }),
+              signal: controller.signal,
+            })
+            const payload = await response.json().catch(() => null)
             if (controller.signal.aborted) return
-            runtime.translation = typeof outcome === 'string'
-              ? outcome
-              : String(outcome?.text ?? outcome?.translation ?? '')
+            if (!response.ok || payload?.ok !== true) {
+              throw new Error(payload?.error?.message ?? `翻译失败（HTTP ${response.status}）`)
+            }
+            runtime.translation = String(payload.text ?? '')
           } catch (error) {
             if (controller.signal.aborted) return
             runtime.translateError = humanizeError(error)
@@ -4287,7 +4289,7 @@ window.__ModuleLoader__.load({
           },
         }
 
-        const register = () => ctx.slots.register({
+        const register = () => slots.register({
           name: 'shell.overlay',
           id: 'dsh-hover-dict',
           order: 80,
@@ -4298,16 +4300,21 @@ window.__ModuleLoader__.load({
           ...props,
         }))
 
-        dispose.push(ctx.slots.inject('shell.overlay', register))
+        dispose.push(slots.inject('shell.overlay', register))
 
     // 设置面板：注册到插件详情页（key 必须是包名）
         try {
           const disposeSettingsStyle = ensureSettingsStyle(doc)
           dispose.push(disposeSettingsStyle)
-          dispose.push(ctx.slots.inject('plugins.bundle.config', () => ctx.slots.register({
+          dispose.push(slots.inject('plugins.bundle.config', () => slots.register({
             name: 'plugins.bundle.config',
             key: 'dsh-hover-dict',
-            inject: () => ({ wordbook: runtime.wordbook, apiPrefix: '/api/dsh-hover-dict' }),
+        // wordbook 要懒取：注册发生时它可能还没建好（setupWordbook 是异步的）。
+        // 直接写 `wordbook: runtime.wordbook` 会把那一次的 null 固化下来。
+            inject: () => ({
+              get wordbook() { return runtime.wordbook },
+              apiPrefix: '/api/dsh-hover-dict',
+            }),
           }, SettingsPanel)))
         } catch (error) {
       // 这个版本的宿主可能没有插件详情页，不是错误

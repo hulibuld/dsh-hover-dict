@@ -117,7 +117,13 @@ export function apply(ctx, config) {
       : 32 * 1024 * 1024
 
     const assets = createAssetResolver({ dataDir, maxBytesPerFile })
-    const handler = createHandler({ assets, config: { ...resolved, enabled }, logger: SILENT_LOGGER })
+    // llm 是可选服务：没有它插件照样查词，只是不翻译。
+    // 用 ctx.get 探测，不能写 ctx.llm（未声明时会抛错）。
+    let llm
+    if (typeof ctx?.get === 'function') {
+      try { llm = ctx.get('llm') } catch { llm = undefined }
+    }
+    const handler = createHandler({ assets, llm, config: { ...resolved, enabled }, logger: SILENT_LOGGER })
 
     // 注册即 effect：插件卸载时 disposer 撤掉路由，不泄漏。
     const dispose = ctx.webServer.register({
@@ -226,6 +232,8 @@ export function createAssetResolver(options) {
  */
 export function createHandler(options) {
   const { assets, config } = options
+  /** 可选的 llm 服务，用来做句子翻译。取不到时翻译接口返回明确提示。 */
+  const llm = options.llm
   const logger = options.logger ?? SILENT_LOGGER
   const enabled = config?.enabled !== false
 
@@ -239,9 +247,23 @@ export function createHandler(options) {
   return async function handle(req, res) {
     try {
       const method = req.method ?? 'GET'
+      // translate 是唯一的写操作，其余一律只读。
+      // 先把路径解析出来再判方法，否则 POST /translate 会在方法闸门就被 405 挡掉。
+      const url0 = new URL(req.url ?? '/', 'http://localhost')
+      const rawTail0 = url0.pathname.startsWith(API_PREFIX)
+        ? url0.pathname.slice(API_PREFIX.length).replace(/^\/+/, '')
+        : ''
+      const isTranslate = rawTail0 === 'translate'
+
       if (method !== 'GET' && method !== 'HEAD') {
-        res.setHeader('allow', 'GET, HEAD')
-        return sendError(res, 405, 'E_METHOD', '只支持 GET 与 HEAD', method === 'HEAD')
+        if (!(isTranslate && method === 'POST')) {
+          res.setHeader('allow', 'GET, HEAD')
+          return sendError(res, 405, 'E_METHOD', '只支持 GET 与 HEAD', false)
+        }
+      }
+      if (isTranslate && (method === 'GET' || method === 'HEAD')) {
+        res.setHeader('allow', 'POST')
+        return sendError(res, 405, 'E_METHOD', '翻译接口只接受 POST', method === 'HEAD')
       }
 
       // 先按 URL 解析路径，再对尾段单独 decode。
@@ -255,6 +277,14 @@ export function createHandler(options) {
         tail = decodeURIComponent(rawTail.replace(/^\/+/, ''))
       } catch {
         return sendError(res, 404, 'E_NOT_FOUND', '没有这个词库文件', method === 'HEAD')
+      }
+
+      // 翻译：用宿主的 llm 服务直接调模型。
+      //
+      // 为什么不用 @deepseek-ai/dsh-experimental-translator：那个 bundle 默认关闭，
+      // 用户没开就没法翻译。而 llm 是宿主必然挂载的核心服务，用它更可靠。
+      if (tail === 'translate' && method === 'POST') {
+        return handleTranslate(req, res, llm)
       }
 
       if (tail === 'health') {
@@ -334,6 +364,117 @@ export function createHandler(options) {
       else res.end()
     }
   }
+}
+
+/**
+ * 处理句子翻译。
+ *
+ * 走宿主的 `llm.stream()`：它是核心服务，不像 translator 那样需要额外开 bundle。
+ *
+ * 请求体：{ text: string, target?: string }
+ * 响应体：{ ok: true, text: '<译文>' } 或 { ok: false, error: { code, message } }
+ */
+async function handleTranslate(req, res, llm) {
+  const body = await readJsonBody(req)
+  const text = typeof body?.text === 'string' ? body.text.trim() : ''
+  if (text === '') {
+    return sendError(res, 400, 'E_EMPTY_TEXT', '没有要翻译的内容', false)
+  }
+  if (text.length > 1200) {
+    return sendError(res, 400, 'E_TOO_LONG', '这段话太长了，请分几次选', false)
+  }
+
+  if (!llm || typeof llm.stream !== 'function') {
+    return sendError(res, 503, 'E_NO_LLM',
+      '宿主没有提供 llm 服务，翻译不可用（查词不受影响）', false)
+  }
+
+  // 用宿主当前选定的模型。resolveModelInfo 不可用时退到 deepseek 默认。
+  let provider = 'deepseek'
+  let model = 'deepseek-chat'
+  try {
+    const info = await resolveDefaultTarget(llm)
+    if (info) { provider = info.provider; model = info.model }
+  } catch { /* 用兜底值 */ }
+
+  const prompt = [
+    '把下面的英文翻译成简体中文。',
+    '只输出译文，不要解释、不要加引号、不要保留原文。',
+    '保留原有的换行与标点结构。',
+    '',
+    text,
+  ].join('\n')
+
+  let translated = ''
+  try {
+    for await (const chunk of llm.stream({
+      provider,
+      model,
+      messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }],
+      temperature: 0,
+      maxTokens: 1024,
+    })) {
+      if (chunk?.type === 'text-delta' && typeof chunk.text === 'string') {
+        translated += chunk.text
+      }
+      if (chunk?.type === 'finish' && chunk.reason?.kind === 'error') {
+        throw new Error(chunk.reason.failure?.message ?? '模型返回错误')
+      }
+    }
+  } catch (error) {
+    return sendError(res, 502, 'E_TRANSLATE_FAILED',
+      `翻译失败：${error?.message ?? error}`, false)
+  }
+
+  const clean = translated.trim()
+  if (clean === '') {
+    return sendError(res, 502, 'E_TRANSLATE_EMPTY', '模型没有返回译文', false)
+  }
+  return sendJson(res, 200, { ok: true, text: clean }, false)
+}
+
+/**
+ * 找一个能用的 provider/model。
+ *
+ * 优先用宿主已注册的 provider 列表里的第一个，拿不到就用 deepseek 兜底。
+ */
+async function resolveDefaultTarget(llm) {
+  try {
+    const providers = typeof llm.listProviders === 'function' ? llm.listProviders() : []
+    if (Array.isArray(providers) && providers.length > 0) {
+      const first = providers[0]
+      const id = first?.id ?? first?.provider
+      if (typeof id === 'string' && id !== '') {
+        const models = await llm.listModels(id)
+        if (Array.isArray(models) && models.length > 0 && typeof models[0]?.id === 'string') {
+          return { provider: id, model: models[0].id }
+        }
+        return { provider: id, model: 'deepseek-chat' }
+      }
+    }
+  } catch { /* 落到兜底 */ }
+  return null
+}
+
+/** 读请求体 JSON。体积上限 256 KB。 */
+function readJsonBody(req) {
+  return new Promise((done) => {
+    const chunks = []
+    let size = 0
+    req.on('data', (chunk) => {
+      size += chunk.length
+      if (size > 256 * 1024) { done(null); req.destroy(); return }
+      chunks.push(chunk)
+    })
+    req.on('end', () => {
+      try {
+        done(JSON.parse(Buffer.concat(chunks).toString('utf8')))
+      } catch {
+        done(null)
+      }
+    })
+    req.on('error', () => done(null))
+  })
 }
 
 /** 读 meta.json 里的词条数，用于 health。读不到就返回 undefined，不要抛。 */

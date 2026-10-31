@@ -149,7 +149,9 @@ const CSS = `
  * @returns {import('react').ReactElement | null}
  */
 export function SettingsPanel(props) {
-  // summary 视图只显示一行摘要，不要渲染整个表单
+  // 只有当宿主**明确**说这是 summary 视图时才走摘要分支。
+  // 不能写成 `view !== 'page'`：宿主在某些版本里可能根本不传 view，
+  // 那样整个面板会一直显示成一行的摘要，用户以为没装。
   if (props?.view === 'summary') {
     return h('div', { className: 'hds-hint' }, '英语翻译设置 · 生词本、翻译接口、离线词库')
   }
