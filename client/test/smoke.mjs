@@ -161,19 +161,25 @@ const ctx = makeCtx(registerCalls, injectCalls)
 threw = false
 try { api.apply(ctx) } catch { threw = true }
 t('apply(ctx) 不抛', threw === false)
-t('注册了 shell.overlay 与 settings 两个 slot', registerCalls.length === 2, `${registerCalls.length} 次`)
-t('第一个是 shell.overlay', registerCalls[0]?.options?.name === 'shell.overlay',
-  registerCalls[0]?.options?.name)
-t('第二个是 plugins.bundle.config', registerCalls[1]?.options?.name === 'plugins.bundle.config',
-  registerCalls[1]?.options?.name)
+t('注册了 4 个 slot（覆盖层/设置页/侧边栏面板/图标）', registerCalls.length === 4, `${registerCalls.length} 次`)
+t('覆盖层', registerCalls[0]?.options?.name === 'shell.overlay', registerCalls[0]?.options?.name)
+t('设置页', registerCalls[1]?.options?.name === 'plugins.bundle.config', registerCalls[1]?.options?.name)
+t('侧边栏主面板', registerCalls[2]?.options?.name === 'main', registerCalls[2]?.options?.name)
+t('侧边栏图标', registerCalls[3]?.options?.name === 'sidebar.panellist', registerCalls[3]?.options?.name)
+t('图标与主面板 id 一致',
+  registerCalls[2]?.options?.key === registerCalls[3]?.options?.id
+  && registerCalls[2]?.options?.key === 'hover-dict',
+  `${registerCalls[2]?.options?.key} / ${registerCalls[3]?.options?.id}`)
 t('注册带 id（宿主必需）', typeof registerCalls[0]?.options?.id === 'string',
   registerCalls[0]?.options?.id)
 t('注册只用了宿主登记的字段',
   Object.keys(registerCalls[0]?.options ?? {}).every((k) => ['name', 'id', 'order', 'label', 'locale', 'inject'].includes(k)),
   Object.keys(registerCalls[0]?.options ?? {}).join(','))
-t('inject 请求了两个 slot', injectCalls.length === 2
+t('inject 请求了四个 slot', injectCalls.length === 4
   && injectCalls.includes('shell.overlay')
-  && injectCalls.includes('plugins.bundle.config'), JSON.stringify(injectCalls))
+  && injectCalls.includes('plugins.bundle.config')
+  && injectCalls.includes('main')
+  && injectCalls.includes('sidebar.panellist'), JSON.stringify(injectCalls))
 t('注册了清理 effect', ctx.__effects.length >= 1, `${ctx.__effects.length} 个`)
 t('样式节点已插入', doc.__created.length > 0, `${doc.__created.length} 个 style`)
 t('样式节点带 data-plugin-css', doc.__created[0]?.dataset?.pluginCss !== undefined,
@@ -286,6 +292,49 @@ try { noticeNode = component({ store: noticeStore, actions: {}, tagLabel: (x) =>
 const noticeJson = JSON.stringify(noticeNode, (k, v) => (k === 'node' ? '[obj]' : v))
 t('混排提示渲染不抛', threw === false)
 t('混排提示有文案', noticeJson.includes('只翻译纯英文'))
+
+console.log('\n[4] 侧边栏面板')
+
+// 面板组件是注册的第三项
+const panelComponent = registerCalls[2]?.component
+t('面板是组件函数', typeof panelComponent === 'function')
+
+let panelNode = null
+threw = false
+try {
+  panelNode = panelComponent({ wordbook: null, dict: null })
+} catch (e) { threw = true; console.log('    ', e.message) }
+const panelJson = JSON.stringify(panelNode, (k, v) => (k === 'node' ? '[obj]' : v))
+t('空生词本渲染不抛', threw === false)
+t('面板有标题', panelJson.includes('英语翻译'))
+t('面板有两个标签', panelJson.includes('生词本') && panelJson.includes('设置'))
+t('空态有引导文案', panelJson.includes('生词本还是空的'))
+
+// 有生词的情况
+const fakeBook = {
+  list: () => [
+    { head: 'cute', addedAt: 1, source: 'dsh', note: '', review: { seen: 0, lastSeenAt: 0 } },
+    { head: 'run', addedAt: 2, source: 'dsh', note: '', review: { seen: 0, lastSeenAt: 0 } },
+  ],
+  subscribe: () => () => {},
+  remove: () => Promise.resolve(true),
+  size: () => 2,
+}
+const fakeDict = {
+  entries: {
+    cute: [[['adj.', ['可爱的']], 'ielts', 4345, 1, 0]],
+    run: [[['v.', ['跑', '奔跑']]], 'zk gk', 202, 5, 1],
+  },
+}
+let filledPanel = null
+threw = false
+try { filledPanel = panelComponent({ wordbook: fakeBook, dict: fakeDict }) } catch (e) { threw = true }
+const filledJson = JSON.stringify(filledPanel, (k, v) => (k === 'node' ? '[obj]' : v))
+t('生词本渲染不抛', threw === false)
+t('显示生词 cute', filledJson.includes('cute'))
+t('显示生词 run', filledJson.includes('run'))
+t('显示释义', filledJson.includes('可爱的'))
+t('标题带数量', filledJson.includes('(2)'))
 
 console.log(`\n================ ${pass}/${pass + fail} 通过 ================`)
 if (fail > 0) process.exit(1)

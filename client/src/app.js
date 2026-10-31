@@ -19,7 +19,10 @@ import { SELECTORS } from './hit.js'
 import { wordAt, normalizeKey } from './word.js'
 import { createWordbook } from './wordbook.js'
 import { familyOf } from './family.js'
-import { ensureSettingsStyle, readTranslator, SettingsPanel } from './settings.js'
+import { DictionaryPanel, ensurePanelStyle, ensureSettingsStyle, PanelIcon, readTranslator, SettingsPanel } from './settings.js'
+
+/** 侧边栏面板的 id。图标与主面板靠它配对，改名等于让用户的图标点不开。 */
+const PANEL_ID = 'hover-dict'
 
 /** 覆盖层根节点的属性名，供「点自己身上不算点外面」用。 */
 const SELF_SELECTOR = `[${UI_ATTR}]`
@@ -691,6 +694,37 @@ export function apply(ctx) {
     } catch (error) {
       // 这个版本的宿主可能没有插件详情页，不是错误
       warn('设置面板挂载失败（不影响查词）', error)
+    }
+
+    // 侧边栏面板：左侧那排图标里加一个，点开就是生词本 + 设置。
+    //
+    // 两处注册必须配对：`main` 用 keyed 插槽（key = 图标 id），
+    // `sidebar.panellist` 用 list 插槽（id = 同一个值）。
+    // 只登记宿主认的字段 —— 严格校验的宿主会因多余字段抛错，
+    // 而 apply 一抛错整条 slot 就静默退役（图标直接不出现）。
+    try {
+      dispose.push(ensurePanelStyle(doc))
+
+      const panelProps = () => ({
+        get wordbook() { return runtime.wordbook },
+        get dict() { return runtime.dict },
+      })
+
+      dispose.push(slots.inject('main', () => slots.register({
+        name: 'main',
+        key: PANEL_ID,
+        inject: panelProps,
+      }, DictionaryPanel)))
+
+      dispose.push(slots.inject('sidebar.panellist', () => slots.register({
+        name: 'sidebar.panellist',
+        id: PANEL_ID,
+        order: 40,
+        label: () => '英语翻译',
+        inject: panelProps,
+      }, PanelIcon)))
+    } catch (error) {
+      warn('侧边栏面板挂载失败（不影响查词）', error)
     }
 
     /** 载入词根数据。拿不到就不显示这一块，不影响查词。 */

@@ -478,3 +478,250 @@ export function ensureSettingsStyle(doc) {
   }
   return () => { try { node.remove() } catch { /* ignore */ } }
 }
+
+/** 侧边栏图标组件。用 currentColor，跟随主题与选中态。 */
+export function PanelIcon(props) {
+  const size = props?.size ?? 20
+  return h('svg', {
+    width: size,
+    height: size,
+    viewBox: '0 0 24 24',
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.7,
+    strokeLinecap: 'round',
+    strokeLinejoin: 'round',
+    role: 'img',
+    'aria-label': '字典',
+  }, [
+    h('path', { key: 'l', d: 'M12 6.4C10.2 5.2 7.9 4.9 5.4 5.6v11.2c2.5-.7 4.8-.4 6.6.8' }),
+    h('path', { key: 'r', d: 'M12 6.4c1.8-1.2 4.1-1.5 6.6-.8v11.2c-2.5-.7-4.8-.4-6.6.8' }),
+    h('path', { key: 's', d: 'M12 6.4v11.2' }),
+    h('path', { key: 'a1', d: 'M8.2 13.6l1.5-3.4 1.5 3.4' }),
+    h('path', { key: 'a2', d: 'M8.7 12.6h2' }),
+    h('path', { key: 'r1', d: 'M14.6 9.2h2.6' }),
+    h('path', { key: 'r2', d: 'M14.6 11.8h2.6' }),
+  ])
+}
+
+/** 面板页面的样式（比设置面板宽松，占满整列）。 */
+const PANEL_CSS = `
+.hdp-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  color: var(--dsw-alias-label-primary, inherit);
+  font-size: 13px;
+}
+.hdp-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 16px 8px;
+  border-bottom: .5px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2));
+}
+.hdp-title { font-weight: 600; font-size: 14px; }
+.hdp-sub { color: var(--dsw-alias-label-tertiary, #888); font-size: 12px; }
+.hdp-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 16px 20px;
+}
+.hdp-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 8px 16px 0;
+  border-bottom: .5px solid var(--dsw-alias-border-l1, rgba(127,127,127,.2));
+}
+.hdp-tab {
+  padding: 6px 12px;
+  border: none;
+  background: none;
+  color: var(--dsw-alias-label-tertiary, #888);
+  font: inherit;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -0.5px;
+}
+.hdp-tab:hover { color: var(--dsw-alias-label-secondary, #666); }
+.hdp-tab[data-active] {
+  color: var(--dsw-alias-label-primary, inherit);
+  border-bottom-color: var(--dsw-alias-state-business-primary, #3b82f6);
+}
+.hdp-empty {
+  color: var(--dsw-alias-label-tertiary, #888);
+  text-align: center;
+  padding: 40px 16px;
+  line-height: 1.7;
+}
+.hdp-list { display: flex; flex-direction: column; gap: 2px; }
+.hdp-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--dsw-radius-sm, 6px);
+  cursor: pointer;
+}
+.hdp-item:hover { background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.12)); }
+.hdp-item-word { font-weight: 600; font-size: 14px; }
+.hdp-item-zh {
+  flex: 1;
+  min-width: 0;
+  color: var(--dsw-alias-label-secondary, #666);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hdp-item-x {
+  border: none;
+  background: none;
+  color: var(--dsw-alias-label-tertiary, #999);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.hdp-item-x:hover {
+  background: var(--dsw-alias-interactive-bg-hover, rgba(127,127,127,.16));
+  color: var(--dsw-alias-state-error-primary, #e5484d);
+}
+.hdp-search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border-radius: var(--dsw-radius-sm, 6px);
+  border: .5px solid var(--dsw-alias-border-l2, rgba(127,127,127,.3));
+  background: var(--dsw-alias-bg-base, transparent);
+  color: inherit;
+  font: inherit;
+}
+`
+
+/** 插面板样式。 */
+export function ensurePanelStyle(doc) {
+  if (!doc || typeof doc.createElement !== 'function') return () => {}
+  const id = 'dsh-hover-dict/panel.css'
+  const selector = `style[data-plugin-css=${JSON.stringify(id)}]`
+  let node = doc.querySelector(selector)
+  if (node === null) {
+    node = doc.createElement('style')
+    node.dataset.pluginCss = id
+    node.textContent = PANEL_CSS
+    const head = doc.head ?? doc.documentElement
+    if (!head) return () => {}
+    head.appendChild(node)
+  } else if (node.textContent !== PANEL_CSS) {
+    node.textContent = PANEL_CSS
+  }
+  return () => { try { node.remove() } catch { /* ignore */ } }
+}
+
+/**
+ * 侧边栏面板：生词本 + 设置，一页看完。
+ *
+ * @param {object} props
+ * @returns {import('react').ReactElement}
+ */
+export function DictionaryPanel(props) {
+  const book = props?.wordbook
+  const dict = props?.dict
+  const [tab, setTab] = useState('book')
+  const [version, setVersion] = useState(0)
+  const [query, setQuery] = useState('')
+
+  // 订阅生词本变化
+  useEffect(() => {
+    if (!book || typeof book.subscribe !== 'function') return undefined
+    const off = book.subscribe(() => setVersion((n) => n + 1))
+    return () => { try { off() } catch { /* ignore */ } }
+  }, [book])
+
+  const words = book?.list?.() ?? []
+  const filtered = query.trim() === ''
+    ? words
+    : words.filter((item) => item.head.includes(query.trim().toLowerCase()))
+
+  /** 取一个词的中文简述，用于列表右侧。 */
+  const briefOfWord = (head) => {
+    if (!dict) return ''
+    const entry = dict.entries?.[head]
+    if (!Array.isArray(entry)) return ''
+    const groups = Array.isArray(entry[0]) ? entry[0] : []
+    for (const group of groups) {
+      const zh = Array.isArray(group?.[1]) ? group[1] : []
+      if (zh.length > 0) return zh.slice(0, 2).join('；')
+    }
+    return ''
+  }
+
+  const tabs = [
+    h('button', {
+      key: 'book', className: 'hdp-tab', type: 'button',
+      'data-active': tab === 'book' ? '' : undefined,
+      onClick: () => setTab('book'),
+    }, `生词本 ${words.length > 0 ? `(${words.length})` : ''}`),
+    h('button', {
+      key: 'settings', className: 'hdp-tab', type: 'button',
+      'data-active': tab === 'settings' ? '' : undefined,
+      onClick: () => setTab('settings'),
+    }, '设置'),
+  ]
+
+  const body = []
+
+  if (tab === 'book') {
+    if (words.length === 0) {
+      body.push(h('div', { key: 'empty', className: 'hdp-empty' },
+        '生词本还是空的。',
+        h('br'),
+        '在对话里点开一个词，点标题旁边那颗 ☆ 就能收进来。'))
+    } else {
+      body.push(h('input', {
+        key: 'q', className: 'hdp-search', type: 'text',
+        placeholder: `在 ${words.length} 个生词里搜…`,
+        value: query,
+        onChange: (event) => setQuery(event.target.value),
+      }))
+      body.push(h('div', { key: 'list', className: 'hdp-list' },
+        filtered.map((item) => h('div', {
+          key: item.head,
+          className: 'hdp-item',
+        },
+        h('span', { className: 'hdp-item-word' }, item.head),
+        h('span', { className: 'hdp-item-zh' }, briefOfWord(item.head)),
+        h('button', {
+          className: 'hdp-item-x', type: 'button', title: '移出',
+          onClick: (event) => {
+            event.stopPropagation()
+            book.remove(item.head)
+          },
+        }, '×'),
+        ))))
+      if (filtered.length === 0) {
+        body.push(h('div', { key: 'noresult', className: 'hdp-empty' }, '没有匹配的词'))
+      }
+    }
+  } else {
+    body.push(h(SettingsPanel, {
+      key: 'settings',
+      view: 'page',
+      wordbook: book,
+      apiPrefix: '/api/dsh-hover-dict',
+    }))
+  }
+
+  return h('div', { className: 'hdp-root' }, [
+    h('div', { key: 'head', className: 'hdp-head' }, [
+      h('span', { key: 't', className: 'hdp-title' }, '英语翻译'),
+      h('span', { key: 's', className: 'hdp-sub' }, '点选查词 · 生词本'),
+    ]),
+    h('div', { key: 'tabs', className: 'hdp-tabs' }, tabs),
+    h('div', { key: 'body', className: 'hdp-body' }, body),
+  ])
+}
