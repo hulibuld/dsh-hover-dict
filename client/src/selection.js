@@ -44,7 +44,7 @@ const HAS_HAN = /[\u4e00-\u9fff\u3400-\u4dbf]/
  *   中文为主偶有英文   64%
  * 取 10% 能把后两种挡掉，又不误伤「This is a test 测试」这种顺带夹一个词的。
  */
-const MAX_HAN_RATIO = 0.10
+export const DEFAULT_MAX_HAN_RATIO = 0.10
 
 /**
  * 数一下汉字相对拉丁字母的占比。
@@ -67,11 +67,13 @@ export function hanRatio(text) {
  * 单词查询不走这条判断 —— 单个词本来就不会含中文。
  *
  * @param {string} text
+ * @param {number} [maxHanRatio] 汉字占比上限，默认 10%；由设置页传入
  * @returns {boolean}
  */
-export function isTranslatable(text) {
+export function isTranslatable(text, maxHanRatio) {
   if (!HAS_LATIN.test(text)) return false
-  return hanRatio(text) <= MAX_HAN_RATIO
+  const limit = Number.isFinite(maxHanRatio) ? maxHanRatio : DEFAULT_MAX_HAN_RATIO
+  return hanRatio(text) <= limit
 }
 
 /**
@@ -93,7 +95,7 @@ export function isTranslatable(text) {
  * @param {string} raw
  * @returns {{ kind: 'word', key: string } | { kind: 'phrase', text: string } | null}
  */
-export function classifySelection(raw) {
+export function classifySelection(raw, options) {
   if (typeof raw !== 'string') return null
   const text = raw.replace(/\s+/g, ' ').trim()
   if (text.length === 0 || text.length > MAX_SELECTION_CHARS) return null
@@ -110,8 +112,13 @@ export function classifySelection(raw) {
   // 顺序很重要：像「这个 tokenizers 的分词」这种，两个英文词之间夹着中文，
   // 用「词与词只隔空白」的正则根本匹配不上，会一路掉到最后的 null，
   // 界面就完全没反应。先按汉字占比拦下来，才能给出「跳过」的明确结果。
-  if (HAS_HAN.test(text) && !isTranslatable(text)) {
-    return { kind: 'skip', reason: 'mixed-language', text }
+  // 中英混排：直接不处理，界面上什么都不弹。
+  //
+  // 之前会返回 skip 并弹一句「选中的内容中英混排，只翻译纯英文」，
+  // 但用户要的是「不翻译就别弹窗」—— 选一段话本来就是为了复制或引用，
+  // 弹一个框反而碍事。
+  if (HAS_HAN.test(text) && !isTranslatable(text, options?.maxHanRatio)) {
+    return null
   }
 
   if (HAS_MULTIPLE_WORDS.test(text)) {
@@ -133,7 +140,7 @@ export function classifySelection(raw) {
  * @param {Document} doc
  * @returns {SelectionResult | null}
  */
-export function readSelection(doc) {
+export function readSelection(doc, options) {
   if (!doc || typeof doc.getSelection !== 'function') return null
   let selection = null
   try {
@@ -145,7 +152,7 @@ export function readSelection(doc) {
   if (typeof selection.rangeCount !== 'number' || selection.rangeCount === 0) return null
 
   const raw = selection.toString()
-  const classified = classifySelection(raw)
+  const classified = classifySelection(raw, options)
   if (classified === null) return null
 
   const range = selection.getRangeAt(0)

@@ -288,8 +288,7 @@ let noticeNode = null
 threw = false
 try { noticeNode = component({ store: noticeStore, actions: {}, tagLabel: (x) => x }) } catch (e) { threw = true }
 const noticeJson = JSON.stringify(noticeNode, (k, v) => (k === 'node' ? '[obj]' : v))
-t('混排提示渲染不抛', threw === false)
-t('混排提示有文案', noticeJson.includes('只翻译纯英文'))
+t('混排不再渲染提示框', !noticeJson.includes('中英混排') && !noticeJson.includes('只翻译纯英文'))
 
 console.log('\n[4] 侧边栏面板')
 

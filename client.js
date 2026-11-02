@@ -754,7 +754,7 @@ window.__ModuleLoader__.load({
  *   中文为主偶有英文   64%
  * 取 10% 能把后两种挡掉，又不误伤「This is a test 测试」这种顺带夹一个词的。
  */
-    const MAX_HAN_RATIO = 0.10
+    const DEFAULT_MAX_HAN_RATIO = 0.10
 
 /**
  * 数一下汉字相对拉丁字母的占比。
@@ -777,11 +777,13 @@ window.__ModuleLoader__.load({
  * 单词查询不走这条判断 —— 单个词本来就不会含中文。
  *
  * @param {string} text
+ * @param {number} [maxHanRatio] 汉字占比上限，默认 10%；由设置页传入
  * @returns {boolean}
  */
-    function isTranslatable(text) {
+    function isTranslatable(text, maxHanRatio) {
       if (!HAS_LATIN.test(text)) return false
-      return hanRatio(text) <= MAX_HAN_RATIO
+      const limit = Number.isFinite(maxHanRatio) ? maxHanRatio : DEFAULT_MAX_HAN_RATIO
+      return hanRatio(text) <= limit
     }
 
 /**
@@ -803,7 +805,7 @@ window.__ModuleLoader__.load({
  * @param {string} raw
  * @returns {{ kind: 'word', key: string } | { kind: 'phrase', text: string } | null}
  */
-    function classifySelection(raw) {
+    function classifySelection(raw, options) {
       if (typeof raw !== 'string') return null
       const text = raw.replace(/\s+/g, ' ').trim()
       if (text.length === 0 || text.length > MAX_SELECTION_CHARS) return null
@@ -820,8 +822,13 @@ window.__ModuleLoader__.load({
   // 顺序很重要：像「这个 tokenizers 的分词」这种，两个英文词之间夹着中文，
   // 用「词与词只隔空白」的正则根本匹配不上，会一路掉到最后的 null，
   // 界面就完全没反应。先按汉字占比拦下来，才能给出「跳过」的明确结果。
-      if (HAS_HAN.test(text) && !isTranslatable(text)) {
-        return { kind: 'skip', reason: 'mixed-language', text }
+  // 中英混排：直接不处理，界面上什么都不弹。
+  //
+  // 之前会返回 skip 并弹一句「选中的内容中英混排，只翻译纯英文」，
+  // 但用户要的是「不翻译就别弹窗」—— 选一段话本来就是为了复制或引用，
+  // 弹一个框反而碍事。
+      if (HAS_HAN.test(text) && !isTranslatable(text, options?.maxHanRatio)) {
+        return null
       }
 
       if (HAS_MULTIPLE_WORDS.test(text)) {
@@ -843,7 +850,7 @@ window.__ModuleLoader__.load({
  * @param {Document} doc
  * @returns {SelectionResult | null}
  */
-    function readSelection(doc) {
+    function readSelection(doc, options) {
       if (!doc || typeof doc.getSelection !== 'function') return null
       let selection = null
       try {
@@ -855,7 +862,7 @@ window.__ModuleLoader__.load({
       if (typeof selection.rangeCount !== 'number' || selection.rangeCount === 0) return null
 
       const raw = selection.toString()
-      const classified = classifySelection(raw)
+      const classified = classifySelection(raw, options)
       if (classified === null) return null
 
       const range = selection.getRangeAt(0)
@@ -1010,7 +1017,7 @@ window.__ModuleLoader__.load({
       return false
     }
 
-      return { MAX_SELECTION_CHARS, hanRatio, isTranslatable, classifySelection, readSelection, rectsOf, caretAtPoint, rangeRects, unionOf, hitsAny }
+      return { MAX_SELECTION_CHARS, DEFAULT_MAX_HAN_RATIO, hanRatio, isTranslatable, classifySelection, readSelection, rectsOf, caretAtPoint, rangeRects, unionOf, hitsAny }
     })()
 
     // ═══ net.js ═══
@@ -4172,6 +4179,7 @@ window.__ModuleLoader__.load({
       const [dictInfo, setDictInfo] = useState(null)
       const [packs, setPacks] = useState(() => readPacks(storage))
       const [clearPending, setClearPending] = useState(false)
+      const [maxHanRatio, setMaxHanRatio] = useState(() => readMaxHanRatioRaw(storage))
 
       const book = props?.wordbook
       const apiPrefix = props?.apiPrefix ?? '/api/dsh-hover-dict'
@@ -4438,7 +4446,20 @@ window.__ModuleLoader__.load({
               onChange: (v) => patchAppearance('cardMaxWidthPx', Number(v)),
               style: { maxWidth: 130 },
             })),
-          field('s3', '显示考纲标签',
+          field('s3', '中文占比超过多少不翻译',
+            h(Input, {
+              type: 'number',
+              value: String(Math.round(maxHanRatio * 100)),
+              onChange: (v) => {
+                const pct = Math.max(0, Math.min(100, Number(v) || 0))
+                setMaxHanRatio(pct / 100)
+                try { storage?.setItem?.('dsh-hover-dict:maxHanRatio', String(pct / 100)) } catch { /* ignore */ }
+              },
+              style: { maxWidth: 110 },
+            }),
+            '按百分比算：汉字数 ÷（汉字 + 英文字母）。超过这个比例就完全不弹窗，既不翻译也不提示。设 0 表示只要有一个汉字就不翻。'),
+
+          field('s4', '显示考纲标签',
             h(Switch, {
               checked: ux.appearance.showTags !== false,
               onChange: (next) => patchAppearance('showTags', next),
@@ -4479,6 +4500,18 @@ window.__ModuleLoader__.load({
       try {
         storage?.setItem?.('dsh-hover-dict:packs', JSON.stringify(packs))
       } catch { /* ignore */ }
+    }
+
+/** 读中文占比上限，默认 0.1（10%）。 */
+    function readMaxHanRatioRaw(storage) {
+      try {
+        const raw = storage?.getItem?.('dsh-hover-dict:maxHanRatio')
+        if (raw !== null && raw !== undefined && raw !== '') {
+          const value = Number(raw)
+          if (Number.isFinite(value) && value >= 0 && value <= 1) return value
+        }
+      } catch { /* ignore */ }
+      return 0.1
     }
 
 /** 读 localStorage，失败返回 undefined。 */
@@ -4532,7 +4565,7 @@ window.__ModuleLoader__.load({
       return () => { try { node.remove() } catch { /* ignore */ } }
     }
 
-      return { SettingsPanel, WORD_PACKS, readPacks, writePacks, readTranslator, writeTranslator, translatorChain, ensureSettingsStyle }
+      return { SettingsPanel, WORD_PACKS, readPacks, writePacks, readMaxHanRatioRaw, readTranslator, writeTranslator, translatorChain, ensureSettingsStyle }
     })()
 
     // ═══ card.js ═══
@@ -4885,7 +4918,7 @@ window.__ModuleLoader__.load({
       var { computeOverlayRect } = __mod_position
       var { ensureStyle, PopoverBody, PhraseBody, UI_ATTR } = __mod_overlay
       var { CardRoot } = __mod_card
-      var { caretAtPoint, rangeRects, readSelection, unionOf } = __mod_selection
+      var { caretAtPoint, DEFAULT_MAX_HAN_RATIO, rangeRects, readSelection, unionOf } = __mod_selection
       var { SELECTORS } = __mod_hit
       var { wordAt, normalizeKey } = __mod_word
       var { createWordbook } = __mod_wordbook
@@ -5167,16 +5200,6 @@ window.__ModuleLoader__.load({
           runtime.translating = false
           runtime.notice = ''
 
-      // 中英混排：不翻译，但给一句提示。
-      // 完全静默会让用户以为插件坏了——他们明明选中了东西。
-          if (selection.kind === 'skip') {
-            runtime.mode = 'notice'
-            runtime.notice = '选中的内容中英混排，只翻译纯英文'
-            runtime.placement = placeFor('popover', bounds)
-            notify()
-            return
-          }
-
           if (selection.kind === 'word') {
             const hit = lookupWord(selection.key)
             if (hit === null) {
@@ -5261,6 +5284,23 @@ window.__ModuleLoader__.load({
      * 判定用祖先链查找：从事件目标往上找 `[data-conversation-region="chat"]`。
      * 找不到就不在正文里。
      */
+    /**
+     * 读「中文占比上限」设置。
+     *
+     * 存在 localStorage，键 `dsh-hover-dict:maxHanRatio`，取值 0–1。
+     * 读不到就用默认 10%。
+     */
+        const readMaxHanRatio = (store) => {
+          try {
+            const raw = store?.getItem?.('dsh-hover-dict:maxHanRatio')
+            if (raw !== null && raw !== undefined && raw !== '') {
+              const value = Number(raw)
+              if (Number.isFinite(value) && value >= 0 && value <= 1) return value
+            }
+          } catch { /* 读失败用默认 */ }
+          return DEFAULT_MAX_HAN_RATIO
+        }
+
     /** 取当前选区的起始节点（用来判断选区在哪个区域里）。 */
         const currentSelectionNode = (d) => {
           try {
@@ -5322,7 +5362,7 @@ window.__ModuleLoader__.load({
 
     /** 划选完成后尝试处理选区。 */
         const trySelection = () => {
-          const selection = readSelection(doc)
+          const selection = readSelection(doc, { maxHanRatio: readMaxHanRatio(storage) })
           if (selection === null || selection.collapsed) return false
       // 选区必须落在对话正文里。输入框里选中文字是想复制或替换，不是查词。
           const anchorNode = currentSelectionNode(doc)
@@ -5493,7 +5533,6 @@ window.__ModuleLoader__.load({
             translation: runtime.translation,
             translating: runtime.translating,
             translateError: runtime.translateError,
-            notice: runtime.notice,
             placement: runtime.placement,
             status: runtime.status,
             errorMessage: runtime.errorMessage,
@@ -5742,7 +5781,7 @@ window.__ModuleLoader__.load({
         if (!snapshot) return null
         const {
           mode, selection, result, entryRaw, translation, translating, translateError,
-          placement, ux, status, errorMessage, inBook, inBookSet, family, roots, notice,
+          placement, ux, status, errorMessage, inBook, inBookSet, family, roots,
         } = snapshot
         const actions = props.actions ?? {}
         const children = []
@@ -5865,6 +5904,7 @@ window.__ModuleLoader__.load({
     exports.C = __mod_ui.C
     exports.CardRoot = __mod_card.CardRoot
     exports.DEFAULT_APPEARANCE = __mod_config.DEFAULT_APPEARANCE
+    exports.DEFAULT_MAX_HAN_RATIO = __mod_selection.DEFAULT_MAX_HAN_RATIO
     exports.DEFAULT_TIMING = __mod_config.DEFAULT_TIMING
     exports.DEFAULT_UX = __mod_config.DEFAULT_UX
     exports.DRAG_THRESHOLD_PX = __mod_drag.DRAG_THRESHOLD_PX
@@ -5931,6 +5971,7 @@ window.__ModuleLoader__.load({
     exports.pickUpgradeTarget = __mod_card.pickUpgradeTarget
     exports.posLabel = __mod_dict.posLabel
     exports.rangeRects = __mod_selection.rangeRects
+    exports.readMaxHanRatioRaw = __mod_settings.readMaxHanRatioRaw
     exports.readPacks = __mod_settings.readPacks
     exports.readSelection = __mod_selection.readSelection
     exports.readTranslator = __mod_settings.readTranslator

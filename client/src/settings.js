@@ -576,6 +576,7 @@ export function SettingsPanel(props) {
   const [dictInfo, setDictInfo] = useState(null)
   const [packs, setPacks] = useState(() => readPacks(storage))
   const [clearPending, setClearPending] = useState(false)
+  const [maxHanRatio, setMaxHanRatio] = useState(() => readMaxHanRatioRaw(storage))
 
   const book = props?.wordbook
   const apiPrefix = props?.apiPrefix ?? '/api/dsh-hover-dict'
@@ -842,7 +843,20 @@ export function SettingsPanel(props) {
           onChange: (v) => patchAppearance('cardMaxWidthPx', Number(v)),
           style: { maxWidth: 130 },
         })),
-      field('s3', '显示考纲标签',
+      field('s3', '中文占比超过多少不翻译',
+        h(Input, {
+          type: 'number',
+          value: String(Math.round(maxHanRatio * 100)),
+          onChange: (v) => {
+            const pct = Math.max(0, Math.min(100, Number(v) || 0))
+            setMaxHanRatio(pct / 100)
+            try { storage?.setItem?.('dsh-hover-dict:maxHanRatio', String(pct / 100)) } catch { /* ignore */ }
+          },
+          style: { maxWidth: 110 },
+        }),
+        '按百分比算：汉字数 ÷（汉字 + 英文字母）。超过这个比例就完全不弹窗，既不翻译也不提示。设 0 表示只要有一个汉字就不翻。'),
+
+      field('s4', '显示考纲标签',
         h(Switch, {
           checked: ux.appearance.showTags !== false,
           onChange: (next) => patchAppearance('showTags', next),
@@ -883,6 +897,18 @@ export function writePacks(storage, packs) {
   try {
     storage?.setItem?.('dsh-hover-dict:packs', JSON.stringify(packs))
   } catch { /* ignore */ }
+}
+
+/** 读中文占比上限，默认 0.1（10%）。 */
+export function readMaxHanRatioRaw(storage) {
+  try {
+    const raw = storage?.getItem?.('dsh-hover-dict:maxHanRatio')
+    if (raw !== null && raw !== undefined && raw !== '') {
+      const value = Number(raw)
+      if (Number.isFinite(value) && value >= 0 && value <= 1) return value
+    }
+  } catch { /* ignore */ }
+  return 0.1
 }
 
 /** 读 localStorage，失败返回 undefined。 */

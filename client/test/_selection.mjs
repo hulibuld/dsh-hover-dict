@@ -21,12 +21,16 @@ t('带 8% 中文的英文', classifySelection('This is a test 测试 of the syst
 t('代码片段', classifySelection('const result = await fetch(url)')?.kind, 'phrase')
 
 console.log('\n— 中英混排：不翻译（用户要求）—')
-const skip = (x) => classifySelection(x)?.kind ?? null
-t('中英各半 → skip', skip('这个 tokenizers 的分词是什么意思'), 'skip')
-t('中文为主 → skip', skip('我觉得这个 approach 不太行，需要换个思路'), 'skip')
-t('纯中文 → null', skip('今天天气不错'), null)
-t('整段对话带英文 → skip', skip('好的，我这就去改。The plugin registers a lazy factory whose id equals the package name. 然后重启就行。'), 'skip')
-t('skip 带原因', classifySelection('这个 tokenizers 的分词')?.reason, 'mixed-language')
+// 中英混排：直接返回 null，界面上什么都不弹
+t('中英各半 → 不处理', classifySelection('这个 tokenizers 的分词是什么意思'), null)
+t('中文为主 → 不处理', classifySelection('我觉得这个 approach 不太行，需要换个思路'), null)
+t('纯中文 → 不处理', classifySelection('今天天气不错'), null)
+t('整段对话带英文 → 不处理', classifySelection('好的，我这就去改。The plugin registers a lazy factory whose id equals the package name. 然后重启就行。'), null)
+
+// 阈值可配
+t('阈值 0：有汉字就不翻', classifySelection('This is a test 测试 of the system', { maxHanRatio: 0 }), null)
+t('默认阈值：夹一个中文词仍翻', classifySelection('This is a test 测试 of the system')?.kind, 'phrase')
+t('阈值放宽到 0.5：中英各半能翻', classifySelection('中文 hello world test', { maxHanRatio: 0.5 })?.kind, 'phrase')
 
 console.log('\n— hanRatio —')
 t('纯英文 = 0', hanRatio('Hello world'), 0)

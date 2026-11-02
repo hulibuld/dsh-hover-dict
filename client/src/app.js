@@ -14,7 +14,7 @@ import { fetchAsset, humanizeError } from './net.js'
 import { computeOverlayRect } from './position.js'
 import { ensureStyle, PopoverBody, PhraseBody, UI_ATTR } from './overlay.js'
 import { CardRoot } from './card.js'
-import { caretAtPoint, rangeRects, readSelection, unionOf } from './selection.js'
+import { caretAtPoint, DEFAULT_MAX_HAN_RATIO, rangeRects, readSelection, unionOf } from './selection.js'
 import { SELECTORS } from './hit.js'
 import { wordAt, normalizeKey } from './word.js'
 import { createWordbook } from './wordbook.js'
@@ -286,16 +286,6 @@ export function apply(ctx) {
       runtime.translating = false
       runtime.notice = ''
 
-      // 中英混排：不翻译，但给一句提示。
-      // 完全静默会让用户以为插件坏了——他们明明选中了东西。
-      if (selection.kind === 'skip') {
-        runtime.mode = 'notice'
-        runtime.notice = '选中的内容中英混排，只翻译纯英文'
-        runtime.placement = placeFor('popover', bounds)
-        notify()
-        return
-      }
-
       if (selection.kind === 'word') {
         const hit = lookupWord(selection.key)
         if (hit === null) {
@@ -380,6 +370,23 @@ export function apply(ctx) {
      * 判定用祖先链查找：从事件目标往上找 `[data-conversation-region="chat"]`。
      * 找不到就不在正文里。
      */
+    /**
+     * 读「中文占比上限」设置。
+     *
+     * 存在 localStorage，键 `dsh-hover-dict:maxHanRatio`，取值 0–1。
+     * 读不到就用默认 10%。
+     */
+    const readMaxHanRatio = (store) => {
+      try {
+        const raw = store?.getItem?.('dsh-hover-dict:maxHanRatio')
+        if (raw !== null && raw !== undefined && raw !== '') {
+          const value = Number(raw)
+          if (Number.isFinite(value) && value >= 0 && value <= 1) return value
+        }
+      } catch { /* 读失败用默认 */ }
+      return DEFAULT_MAX_HAN_RATIO
+    }
+
     /** 取当前选区的起始节点（用来判断选区在哪个区域里）。 */
     const currentSelectionNode = (d) => {
       try {
@@ -441,7 +448,7 @@ export function apply(ctx) {
 
     /** 划选完成后尝试处理选区。 */
     const trySelection = () => {
-      const selection = readSelection(doc)
+      const selection = readSelection(doc, { maxHanRatio: readMaxHanRatio(storage) })
       if (selection === null || selection.collapsed) return false
       // 选区必须落在对话正文里。输入框里选中文字是想复制或替换，不是查词。
       const anchorNode = currentSelectionNode(doc)
@@ -612,7 +619,6 @@ export function apply(ctx) {
         translation: runtime.translation,
         translating: runtime.translating,
         translateError: runtime.translateError,
-        notice: runtime.notice,
         placement: runtime.placement,
         status: runtime.status,
         errorMessage: runtime.errorMessage,
@@ -861,7 +867,7 @@ export function OverlayHost(props) {
     if (!snapshot) return null
     const {
       mode, selection, result, entryRaw, translation, translating, translateError,
-      placement, ux, status, errorMessage, inBook, inBookSet, family, roots, notice,
+      placement, ux, status, errorMessage, inBook, inBookSet, family, roots,
     } = snapshot
     const actions = props.actions ?? {}
     const children = []
