@@ -2971,6 +2971,12 @@ window.__ModuleLoader__.load({
       const onPointerDown = (event) => {
     // 只响应主键；右键留给上下文菜单
         if (event.button !== 0) return
+    // 按在按钮、链接、输入框上时不启动拖动。
+    // 把手内部可能嵌着星标、关闭这些控件，它们的点击必须原样传下去，
+    // 否则用户点星标会被拖动手势吃掉（表现为「点了没反应」）。
+        if (event.target && typeof event.target.closest === 'function') {
+          if (event.target.closest('button, a, input, textarea, select, [role="button"]') !== null) return
+        }
         const rect = panel.getBoundingClientRect()
         origin = { top: rect.top, left: rect.left }
         start = { x: event.clientX, y: event.clientY }
@@ -4680,24 +4686,41 @@ window.__ModuleLoader__.load({
   // 头部：词 + 星标。星标点亮表示这个词已在生词本里。
   // 这一条同时是拖动把手 —— 顶部是自然的抓取位置。
       const inBook = props.inBook === true
+  // 头部拆成两块：左边是拖动把手，右边是星标。
+  // 之前星标嵌在把手内部，把手的 pointerdown 会 preventDefault 并抢指针捕获，
+  // 星标的点击因此收不到 —— 用户点了没反应。
       children.push(h('div', {
         key: 'head',
-        className: 'hd-word-row hd-drag-handle',
-        ref: handleRef,
-        title: '拖动可移动位置，单击回到原位',
-        style: { cursor: dragPos === null ? 'grab' : 'grab', userSelect: 'none' },
-      },
+        className: 'hd-word-row',
+        style: { display: 'flex', alignItems: 'center', gap: 8 },
+      }, [
+        h('div', {
+          key: 'grab',
+          className: 'hd-drag-handle',
+          ref: handleRef,
+          title: '拖动可移动位置，单击回到原位',
+          style: {
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            flex: 1,
+            minWidth: 0,
+            cursor: 'grab',
+            userSelect: 'none',
+          },
+        },
         h('span', {
           className: 'hd-word',
       // 当前词在生词本里 → 标题标红
           style: inBook ? { color: 'var(--dsw-alias-state-error-primary, #e5484d)' } : undefined,
-        }, props.word ?? ''),
+        }, props.word ?? '')),
         h('button', {
           key: 'star',
           className: `hd-star${inBook ? ' hd-star-on' : ''}`,
           type: 'button',
           title: inBook ? '已在生词本，点击移出' : '加入生词本',
           'aria-pressed': inBook ? 'true' : 'false',
+          onPointerDown: (event) => event.stopPropagation(),
           onMouseDown: (event) => { event.preventDefault(); event.stopPropagation() },
           onClick: (event) => {
             event.preventDefault()
@@ -4705,7 +4728,7 @@ window.__ModuleLoader__.load({
             props.onToggleStar?.()
           },
         }, inBook ? '★' : '☆'),
-      ))
+      ]))
       children.push(h('button', {
         key: 'close',
         className: 'hd-close',

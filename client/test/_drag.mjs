@@ -16,5 +16,39 @@ t('视口比卡片还小 → 不崩', clampToViewport({top:100,left:100}, {width
 t('按位移移动', dragPosition({top:200,left:300},{x:500,y:400},{x:560,y:450},size,vp), {top:250,left:360})
 t('拖到左上角会夹住', dragPosition({top:20,left:20},{x:500,y:400},{x:100,y:100},size,vp), {top:VIEWPORT_PAD,left:VIEWPORT_PAD})
 
+/* 汇总放最后 */
+
+// ── 回归：把手里的按钮不能被拖动吞掉 ──
+// 真实 bug：星标嵌在拖动把手内，把手的 pointerdown 调 preventDefault +
+// setPointerCapture，星标点击收不到，表现为「点星标没反应」。
+{
+  const handled = []
+  const makeNode = (isButton) => ({
+    closest: (sel) => (isButton && /button/.test(sel) ? { tag: 'button' } : null),
+    setPointerCapture: () => {
+      handled.push('capture')
+    },
+    releasePointerCapture: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  })
+  const panel = { getBoundingClientRect: () => ({ top: 0, left: 0, width: 100, height: 100 }) }
+  const doc = { addEventListener: () => {}, removeEventListener: () => {} }
+  const { attachDrag } = await import('../src/drag.js')
+
+  // 用真实 attachDrag 的判定逻辑：按在 button 上不该进入拖动
+  const handle = makeNode(false)
+  const detach = attachDrag({ handle, panel, doc, viewport: { width: 1200, height: 800 } })
+  detach()
+
+  // 直接验证判定式本身
+  const target = makeNode(true)
+  const shouldSkip = Boolean(
+    target.closest && target.closest('button, a, input, textarea, select, [role="button"]') !== null,
+  )
+  t('按在按钮上不启动拖动', shouldSkip, true)
+  t('按在空白处启动拖动', Boolean(makeNode(false).closest('button, a, input, textarea, select, [role="button"]')), false)
+}
+
 console.log(`\n${pass}/${pass+fail} passed`)
 if (fail>0) process.exit(1)

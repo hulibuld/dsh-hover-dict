@@ -84,6 +84,12 @@ export function attachDrag(options) {
   const onPointerDown = (event) => {
     // 只响应主键；右键留给上下文菜单
     if (event.button !== 0) return
+    // 按在按钮、链接、输入框上时不启动拖动。
+    // 把手内部可能嵌着星标、关闭这些控件，它们的点击必须原样传下去，
+    // 否则用户点星标会被拖动手势吃掉（表现为「点了没反应」）。
+    if (event.target && typeof event.target.closest === 'function') {
+      if (event.target.closest('button, a, input, textarea, select, [role="button"]') !== null) return
+    }
     const rect = panel.getBoundingClientRect()
     origin = { top: rect.top, left: rect.left }
     start = { x: event.clientX, y: event.clientY }
