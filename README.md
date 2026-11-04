@@ -1,140 +1,84 @@
-# 点选查词 · dsh-hover-dict
+# dsh-hover-dict · 点选查词
 
-在 DeepSeek Harness 里读英文时，点一下词就看到它什么意思。
+[![npm](https://img.shields.io/npm/v/dsh-hover-dict)](https://www.npmjs.com/package/dsh-hover-dict)
+[![月下载](https://img.shields.io/npm/dm/dsh-hover-dict)](https://www.npmjs.com/package/dsh-hover-dict)
+[![DSH](https://img.shields.io/badge/DSH-0.2.x-blue)](https://github.com/hulibuld/dsh-hover-dict)
+[![License](https://img.shields.io/npm/l/dsh-hover-dict)](LICENSE)
 
-## 它做什么
+`dsh plugin --profile desktop add dsh-hover-dict` · [遇到问题开 issue](https://github.com/hulibuld/dsh-hover-dict/issues/new/choose)
 
-| 你做什么 | 出现什么 |
-|---|---|
-| 单击一个英文单词 | 小浮层：词性、中文释义、考纲标签 |
-| 双击一个英文单词 | 同上 |
-| 左键划选一个词 | 同上 |
-| 左键划选一段**纯英文** | 中文翻译 |
-| 左键划选中英混排的内容 | 不翻译，提示一句 |
-| 点小浮层 | 就地展开大卡片：全部义项、英英释义、词形变化、同根词、词根词缀、双语例句 |
-| 点卡片上的 ☆ | 收进生词本（再点取消） |
+在 DeepSeek 里读英文，点一下词就看到它什么意思。
 
-**范围只限对话正文。** 包括代码块、行内代码和工具调用卡片里的英文 —— 那些地方恰恰最常需要查词（变量名、命令、报错信息）。
+## 装
 
-输入框、右下角的模型选择器、侧栏、设置页都不响应：在这些地方点一下是想定位光标或开菜单，弹词典只会碍事。
+命令一行，装完重启 DSH，插件不走热重载。重启后不用找开关，划词就能用。
 
-**只翻译纯英文。** 选中的内容里汉字超过 10% 就不翻——中英混排的段落翻出来往往词不达意，而且选它是想复制或引用。这时候会给一句提示，不会静默无反应。
+## 能查什么
 
-**结果不会自己消失。** 只有三种情况关闭：点浮层外面、按 Esc、重新选别的。
+单击一个英文词，或者双击，或者左键划选一个词，旁边浮出小卡片：词性、中文释义、考纲标签。
 
-**选中词不加任何底色或边框。** 早先版本给选中的词画半透明底，深色主题下等于把那几个字糊掉一层灰。现在完全不加视觉覆盖，浮层自己就在词旁边。
+划选一段纯英文，给中文翻译。中英混排的不翻，汉字超过 10% 就跳过，只提示一句，不会静默没反应。
+
+点一下浮层，展开大卡片：全部义项、英英释义、词形变化、同根词、词根词缀、双语例句。
+
+范围只算对话正文。代码块、行内代码、工具调用卡片里的英文都能查，那些地方恰恰最常要查，变量名、命令、报错信息都在里面。输入框、右下角的模型选择器、侧栏和设置页不响应，在那些地方点一下是想定位光标或开菜单，弹词典只会碍事。
+
+结果不会自己消失。点浮层外面、按 Esc、重新选别的，三种才关。
+
+选中的词不加底色也不加边框。
 
 没有音标，没有发音。
 
 ## 生词本
 
-卡片和浮层右上角都有星标，点亮表示这个词已在生词本里。
+卡片和浮层右上角都有星标，点亮表示这个词已经在里面了。
 
-**三色标注**，一眼看出一个词和你背过的词是什么关系：
+一个词和你背过的词是什么关系，用颜色分。红的是这个词本身在生词本里，它的变位也算，收藏了 run，ran、running、runs 都标红。蓝的是同一个语义词族里但没收藏，查 care 时 careful、careless、carer 标蓝。
 
-| 颜色 | 含义 | 例子 |
-|---|---|---|
-| 红 | 这个词本身在生词本里（含它的变位） | 收藏了 run，`ran` / `running` / `runs` 也标红 |
-| 蓝 | 语义词族里但没收藏 | 查 `care` 时，`careful` / `careless` / `carer` 标蓝 |
+同根词按派生规则判断，不看字符串像不像。care 和 career 前缀一样，但没有词源关系，不会连在一起。
 
-同根词靠**派生规则**判断，不靠字符串相似：`care` 与 `career` 前缀一样但毫无词源关系，不会连在一起。
+生词本存在 DSH 的本地存储里，换浏览器、清缓存都不丢。
 
-生词本存在 DSH 的本地存储里（KV 落磁盘），换浏览器或清缓存都不会丢。
-
-**导入**：设置面板里可以直接粘贴单词表，一行一个。有道、欧路、百词斩导出的内容都能识别——每行第一个像英文单词的片段会被收下。
+导入在设置面板里，直接粘单词表，一行一个。有道、欧路、百词斩导出的内容都能认，每行第一个像英文单词的片段会被收下。
 
 ## 词根词缀
 
-卡片里给出一个词的拆解，例如：
+卡片里给一个词的拆解。biography 是 bio 生命加 graph 写，rewrite 是 re- 再，careless 是 -less 没有。
 
-```
-biography   bio[词根] 生命 · graph[词根] 写
-telephone   tele[词根] 远 · phon[词根] 声音
-careless    -less[形容词后缀] 没有
-rewrite     re-[前缀] 再
-```
-
-6,374 个词有分析（占词库 31%）。**宁可漏也不误判**：拆完必须过四道闸门——词干要真实存在、释义要有语义重叠、独立基础词不硬拆、人工确认的假拆分列进排除表。所以 `understand` 不会被拆成 `under-` + `stand`，`uncle` 不会被拆成 `un-` + `cle`。
+6,374 个词有分析，占词库 31%。宁可漏也不误判：拆完要过四道闸门，词干得真实存在，释义要有语义重叠，独立基础词不硬拆，人工确认的假拆分进排除表。所以 understand 不会被拆成 under- 加 stand。
 
 ## 设置页
 
-在 **设置** 里，左侧导航那一列（账号与余额 / 通用设置 / 模型 / …）会多出一项「英语翻译」，
-排在「技能」与「费用」之间。点开后有两个标签：
+设置左侧导航那一列会多出「英语翻译」，排在「技能」和「费用」之间。点开两个标签。
 
-| 标签 | 内容 |
-|---|---|
-| 生词本 | 全部收藏的词，带中文释义预览；可搜索、单个移出 |
-| 设置 | 翻译接口、词库管理、生词本导入导出、显示参数 |
+生词本：全部收藏的词，带中文释义预览，能搜、能单个移出。
 
-**只有这一个入口。** 不再另外挂插件详情页或侧边栏图标。
+设置：翻译接口、词库管理、生词本导入导出、显示参数。
 
-## 词库与句子库
+只有这一个入口，不另外挂详情页，也不挂侧边栏图标。
 
-系统自带三个，随包分发，完全离线：
+## 词库
 
-| 包 | 内容 |
-|---|---|
-| 核心词库 | 20,499 个考纲核心词（中考/高考/四六级/考研/托福/雅思/GRE） |
-| 词根词缀库 | 6,374 个词的拆解 |
-| 双语例句库 | 8,960 个词的中英对照例句 |
+自带三个，随包分发，完全离线。
 
-### 自己加词库
+核心词库 20,499 个考纲核心词，中考、高考、四六级、考研、托福、雅思、GRE 都在里面。词根词缀库 6,374 个词的拆解。双语例句库 8,960 个词的中英对照例句。
 
-把文件放进 `data/packs/`，重启 DSH 后自动加载。支持两种格式：
+自己加词库：文件放进 `data/packs/`，重启 DSH 后自动加载。支持两种格式。ECDICT 的 CSV，只要有 `word` 和 `translation` 两列就能用，`definition` 和 `tag` 可选。或者跟 `dict.dat` 同构的 JSON，键是词头，值是槽位数组。
 
-**ECDICT 的 CSV** —— 只要有 `word` 与 `translation` 两列就能用，`definition` 与 `tag` 可选：
+文件名只能是小写字母、数字、连字符，加 `.dat` 或 `.csv`。
 
-```csv
-word,translation,definition,tag
-serendipity,"n. 意外发现, 侥幸",luck,cet6
-blockchain,n. 区块链,a distributed ledger,
-```
-
-**与 `dict.dat` 同构的 JSON** —— 键是词头，值是槽位数组。格式见 `docs/架构.md` 的数据契约。
-
-文件名只能是 `小写字母/数字/连字符` 加 `.dat` 或 `.csv`。这是在防路径穿越：宿主不接受任意路径，
-只认 `data/packs/` 下扫描到的文件。
-
-## 重新生成词库
-
-词库是构建期产物，已经随包提供。要改筛选口径或换语料才需要重跑：
-
-```
-node scripts/build-data.mjs --src <原始数据目录> --out data
-```
-
-它会读该目录下的 `ecdict.csv` 与三个 Tatoeba 文件，产出 `data/dict.dat` 与 `data/meta.json`。
+词库是构建期产物，随包已经给好了。要换语料或者改筛选口径才需要重跑构建脚本。
 
 ## 开发
 
 ```
-node client/build.mjs         # 从 client/src/ 生成 client.js
-node client/build.mjs --check # 校验产物与源码同步
-node scripts/test-host.mjs    # 宿主侧路由测试（起真 http 服务器）
-node client/test/smoke.mjs    # 端到端冒烟（假宿主里装载产物）
+node client/build.mjs
+node client/build.mjs --check
+node scripts/test-host.mjs
+node client/test/smoke.mjs
 ```
 
-各模块单测在 `client/test/` 下，文件名前缀 `_` 的是跑单个模块用的。
-
-源码分模块放在 `client/src/`，构建期拼成单文件 `client.js`。不用打包器是因为这个仓库的运行期依赖必须是零。
-
-**改完源码务必跑一次 `node client/build.mjs`** —— `client.js` 是产物，只改 `client/src/` 不会生效。
-
-## 结构
-
-```
-index.js              宿主侧：词库文件的静态路由，带 ETag 与 gzip
-client.js             浏览器半构建产物（不要手改）
-client/src/           word / hit / selection / dict / net / position / overlay / card / config / app
-client/build.mjs      拼接构建 + 产物校验
-data/dict.dat         词库（以词头为键的 JSON）
-data/meta.json        构建元信息
-locale/               界面文案（中 / 英）
-scripts/build-data.mjs  数据构建脚本
-scripts/test-host.mjs   宿主侧测试
-docs/架构.md          设计文档
-.snapshots/           源码快照，防改动丢失
-```
+改完源码务必跑一次 `node client/build.mjs`。`client.js` 是产物，只改 `client/src/` 不会生效。
 
 ## 许可
 
