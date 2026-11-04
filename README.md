@@ -80,6 +80,10 @@ node client/test/smoke.mjs
 
 改完源码务必跑一次 `node client/build.mjs`。`client.js` 是产物，只改 `client/src/` 不会生效。
 
+## 已知问题与修复记录
+
+累计的修复、现象、原因与修法记在 [docs/FIXES.md](docs/FIXES.md)。以后每修一次加一行，别攒着。
+
 ## 许可
 
 MIT，见 [LICENSE](LICENSE)。
