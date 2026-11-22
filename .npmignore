@@ -2,3 +2,6 @@ node_modules/
 .snapshots/
 *.log
 .DS_Store
+# 有道 Cookie 是用户凭据，绝不发包
+data/youdao-cookie.json
+youdao-cookie.json

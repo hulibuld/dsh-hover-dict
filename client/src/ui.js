@@ -533,6 +533,260 @@ export function hintStyle() {
 }
 
 /**
+ * 顶部页签导航。
+ *
+ * 为什么是 tab 而不是左侧竖排：宿主给设置页的宽度不定，竖排会在窄容器里
+ * 把内容区挤成一条。横排 tab 在窄容器里可以横向滚动，永远不会挤坏正文。
+ *
+ * @param {object} props
+ * @param {Array<{ id: string, label: string, badge?: string }>} props.items
+ * @param {string} props.value 当前选中的 id
+ * @param {(id: string) => void} props.onChange
+ * @returns {import('react').ReactElement}
+ */
+  function Tabs(props) {
+  const items = Array.isArray(props.items) ? props.items : []
+  return h('div', {
+    role: 'tablist',
+    'aria-label': props.label,
+    style: {
+      display: 'flex',
+      gap: 4,
+      flexWrap: 'wrap',
+      padding: 4,
+      borderRadius: RADIUS.md + 1,
+      border: `1px solid ${C.border1}`,
+      background: C.bg1,
+      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
+    },
+  }, items.map((item) => {
+    const active = item.id === props.value
+    return h('button', {
+      key: item.id,
+      type: 'button',
+      role: 'tab',
+      'aria-selected': active ? 'true' : 'false',
+      onClick: () => props.onChange(item.id),
+      style: {
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: GAP.xs,
+        padding: '6px 14px',
+        borderRadius: RADIUS.sm,
+        border: `1px solid ${active ? C.border2 : 'transparent'}`,
+        background: active ? C.bg2 : 'transparent',
+        boxShadow: active ? 'inset 0 1px 0 rgba(255,255,255,0.09)' : 'none',
+        color: active ? C.text : C.textDim,
+        font: 'inherit',
+        fontSize: FS.body,
+        fontWeight: active ? 650 : 520,
+        lineHeight: 1.6,
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+        transition: `background .18s ${EASE.out}, color .18s ${EASE.out}, border-color .18s ${EASE.out}`,
+        WebkitTapHighlightColor: 'transparent',
+      },
+    }, [
+      h('span', { key: 'l' }, item.label),
+      item.badge ? h('span', {
+        key: 'b',
+        style: {
+          padding: '0 6px',
+          borderRadius: RADIUS.pill,
+          background: active ? C.overlay : 'transparent',
+          border: `1px solid ${C.border1}`,
+          fontSize: 10.5,
+          fontVariantNumeric: 'tabular-nums',
+          color: C.textFaint,
+        },
+      }, item.badge) : null,
+    ])
+  }))
+}
+
+/**
+ * 统计数字块：一个大数字 + 一行标签。
+ *
+ * @param {object} props
+ * @param {string} props.label
+ * @param {string|number} props.value
+ * @param {string} [props.hint]
+ * @param {'neutral'|'accent'|'success'|'danger'|'warn'} [props.tone]
+ * @returns {import('react').ReactElement}
+ */
+  function Stat(props) {
+  const tone = props.tone ?? 'neutral'
+  const color = {
+    neutral: C.text,
+    accent: C.accent,
+    success: C.success,
+    danger: C.danger,
+    warn: C.warn,
+  }[tone] ?? C.text
+  return h('div', {
+    'aria-label': `${props.label} ${props.value}`,
+    style: {
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 2,
+      minWidth: 96,
+      flex: '1 1 96px',
+      padding: '10px 13px',
+      borderRadius: RADIUS.md,
+      border: `1px solid ${C.border1}`,
+      background: C.bg1,
+      boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
+    },
+  }, [
+    h('span', {
+      key: 'v',
+      style: {
+        fontSize: 19, fontWeight: 680, lineHeight: 1.35,
+        letterSpacing: '-.4px', fontVariantNumeric: 'tabular-nums', color,
+      },
+    }, String(props.value)),
+    h('span', {
+      key: 'l',
+      style: { fontSize: FS.small, lineHeight: 1.7, color: C.textDim },
+    }, props.label),
+    props.hint ? h('span', {
+      key: 'h',
+      style: { fontSize: 10.5, lineHeight: 1.65, color: C.textFaint },
+    }, props.hint) : null,
+  ])
+}
+
+/**
+ * 可选芯片（单个选中 / 单选组）。
+ *
+ * @param {object} props
+ * @param {string} props.label
+ * @param {boolean} [props.active]
+ * @param {() => void} props.onClick
+ * @param {string} [props.count] 右侧小数字
+ * @returns {import('react').ReactElement}
+ */
+  function Chip(props) {
+  const active = props.active === true
+  return h('button', {
+    type: 'button',
+    'aria-pressed': active ? 'true' : 'false',
+    onClick: props.onClick,
+    style: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      gap: 5,
+      padding: '3px 11px',
+      borderRadius: RADIUS.pill,
+      border: `1px solid ${active ? `color-mix(in srgb, ${C.accent} 55%, transparent)` : C.border2}`,
+      background: active ? `color-mix(in srgb, ${C.accent} 12%, transparent)` : C.bg1,
+      color: active ? C.accent : C.textDim,
+      font: 'inherit',
+      fontSize: FS.small,
+      fontWeight: active ? 620 : 500,
+      lineHeight: 1.7,
+      cursor: 'pointer',
+      whiteSpace: 'nowrap',
+      transition: `background .18s ${EASE.out}, border-color .18s ${EASE.out}, color .18s ${EASE.out}`,
+      WebkitTapHighlightColor: 'transparent',
+    },
+  }, [
+    h('span', { key: 'l' }, props.label),
+    props.count !== undefined && props.count !== null
+      ? h('span', { key: 'c', style: { opacity: 0.72, fontVariantNumeric: 'tabular-nums' } }, String(props.count))
+      : null,
+  ])
+}
+
+/**
+ * 复选框。原生 input 太丑，这里画一个方框 + 勾。
+ *
+ * @param {object} props
+ * @param {boolean} props.checked
+ * @param {(next: boolean) => void} props.onChange
+ * @param {string} [props.label] 无障碍标签
+ * @returns {import('react').ReactElement}
+ */
+  function Checkbox(props) {
+  const on = props.checked === true
+  return h('button', {
+    type: 'button',
+    role: 'checkbox',
+    'aria-checked': on ? 'true' : 'false',
+    'aria-label': props.label,
+    onClick: () => props.onChange(!on),
+    style: {
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      width: 17,
+      height: 17,
+      flex: 'none',
+      padding: 0,
+      borderRadius: 5,
+      border: `1px solid ${on ? 'transparent' : C.border2}`,
+      background: on ? C.accent : C.bgBase,
+      boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.14)',
+      color: '#fff',
+      fontSize: 11,
+      lineHeight: 1,
+      cursor: 'pointer',
+      transition: `background .16s ${EASE.out}, border-color .16s ${EASE.out}`,
+      WebkitTapHighlightColor: 'transparent',
+    },
+  }, on ? '✓' : '')
+}
+
+/**
+ * 分段控件（两个以上互斥选项，比下拉更一眼看全）。
+ *
+ * @param {object} props
+ * @param {Array<{ id: string, label: string }>} props.items
+ * @param {string} props.value
+ * @param {(id: string) => void} props.onChange
+ * @returns {import('react').ReactElement}
+ */
+  function Segment(props) {
+  const items = Array.isArray(props.items) ? props.items : []
+  return h('div', {
+    role: 'radiogroup',
+    'aria-label': props.label,
+    style: {
+      display: 'inline-flex',
+      padding: 2,
+      borderRadius: RADIUS.pill,
+      border: `1px solid ${C.border1}`,
+      background: C.bg1,
+    },
+  }, items.map((item) => {
+    const active = item.id === props.value
+    return h('button', {
+      key: item.id,
+      type: 'button',
+      role: 'radio',
+      'aria-checked': active ? 'true' : 'false',
+      onClick: () => props.onChange(item.id),
+      style: {
+        padding: '3px 12px',
+        borderRadius: RADIUS.pill,
+        border: 0,
+        background: active ? C.bg2 : 'transparent',
+        boxShadow: active ? 'inset 0 1px 0 rgba(255,255,255,0.08)' : 'none',
+        color: active ? C.text : C.textDim,
+        font: 'inherit',
+        fontSize: FS.small,
+        fontWeight: active ? 620 : 500,
+        lineHeight: 1.7,
+        cursor: 'pointer',
+        whiteSpace: 'nowrap',
+        transition: `background .18s ${EASE.out}, color .18s ${EASE.out}`,
+        WebkitTapHighlightColor: 'transparent',
+      },
+    }, item.label)
+  }))
+}
+
+/**
  * 造一套原语。
  *
  * @param {Function} h React.createElement（由插件入口从 `require('react')` 拿到）
@@ -540,6 +794,7 @@ export function hintStyle() {
  *   Card: Function, Button: Function, Switch: Function, Input: Function,
  *   Select: Function, Badge: Function, Note: Function, Field: Function,
  *   PageHeader: Function, Page: Function,
+ *   Tabs: Function, Stat: Function, Chip: Function, Checkbox: Function, Segment: Function,
  *   FS: object, GAP: object, RADIUS: object, C: object, EASE: object, sx: Function, hintStyle: Function,
  * }}
  */
@@ -549,6 +804,7 @@ export function makePrimitives(h) {
   }
   return {
     Card, Button, Switch, Input, Select, Badge, Note, Field, PageHeader, Page,
+    Tabs, Stat, Chip, Checkbox, Segment,
     FS, GAP, RADIUS, C, EASE, sx, hintStyle,
   }
 }

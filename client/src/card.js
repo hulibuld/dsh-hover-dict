@@ -8,6 +8,7 @@
  * 把他拽到别处会丢上下文。代价是卡片会压住正文，所以它可关闭、可固定、有高度上限。
  */
 import { attachDrag } from './drag.js'
+import { PronounceButton } from './review.js'
 
 /** 词根类型 → 中文。 */
 const TYPE_LABELS = {
@@ -175,6 +176,10 @@ export function CardRoot(props) {
       // 当前词在生词本里 → 标题标红
       style: inBook ? { color: 'var(--dsw-alias-state-error-primary, #e5484d)' } : undefined,
     }, props.word ?? '')),
+    // 发音按钮：紧挨词头（设计 §E1）。刻意放在拖动把手**外面** —— 把手
+    // 会 preventDefault + 抢指针捕获，放里面按钮就收不到点击（星标踩过这个坑）。
+    // 不支持 speechSynthesis 时 PronounceButton 自己返回 null，不留死按钮。
+    h(PronounceButton, { key: 'speak', word: props.word ?? '' }),
     h('button', {
       key: 'star',
       className: `hd-star${inBook ? ' hd-star-on' : ''}`,
@@ -205,6 +210,19 @@ export function CardRoot(props) {
 
   if (entry.senses.length > 0) {
     children.push(h(SenseGroups, { key: 'senses', groups: entry.senses }))
+  } else if (props.gloss && String(props.gloss).trim() !== '') {
+    // 词库查不到，但有释义快照（导入/有道抓回来的）→ 直接展示快照
+    children.push(h('div', { key: 'gloss', className: 'hd-zh', style: { marginTop: 2 } }, String(props.gloss).trim()))
+  } else {
+    // 词库未收录：老实说查不到，不假装给释义（CETgo 口径，设计 §E2）。
+    // 「仍要收藏」复用现成的 onToggleStar —— 收藏后 gloss 留空，
+    // 管理台会显示未收录徽章（t2 已做）。已在生词本时这句改成状态提示。
+    children.push(h(MissNotice, {
+      key: 'miss',
+      word: props.word ?? '',
+      inBook,
+      onToggleStar: props.onToggleStar,
+    }))
   }
   // 词形变化：这些形式若在生词本里同样标红
   if (entry.forms.length > 0) {
@@ -333,4 +351,80 @@ export function Examples(props) {
       example.zh ? h('div', { className: 'hd-ex-zh' }, example.zh) : null,
     )
   }))
+}
+
+/**
+ * 词库未收录时的说明块（设计 §E2）。
+ *
+ * 口径是「不假装给释义」：词库没有就说没有，别猜、别拿拼音凑。
+ * 但用户**主动**点开了一个生僻词，往往正因为他想记住它 ——
+ * 所以这里必须留一个「仍要收藏」的出口，而不是一句冷冰冰的查不到。
+ *
+ * @param {object} props
+ * @param {string} props.word
+ * @param {boolean} props.inBook
+ * @param {() => void} [props.onToggleStar]
+ * @returns {import('react').ReactElement}
+ */
+export function MissNotice(props) {
+  const inBook = props.inBook === true
+  return h('div', {
+    style: {
+      display: 'flex',
+      flexDirection: 'column',
+      gap: 8,
+      padding: '10px 12px',
+      borderRadius: 8,
+      border: '1px dashed var(--dsw-alias-border-l2, rgba(127,127,127,.35))',
+      background: 'var(--dsw-alias-bg-layer-1, rgba(127,127,127,.08))',
+    },
+  }, [
+    h('div', {
+      key: 'text',
+      style: {
+        fontSize: '.94em',
+        lineHeight: 1.8,
+        color: 'var(--dsw-alias-label-secondary, #666)',
+      },
+    }, '词库未收录，暂无释义'),
+    h('div', {
+      key: 'row',
+      style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+    }, [
+      inBook
+        ? h('span', {
+          key: 'state',
+          style: { fontSize: '.88em', color: 'var(--dsw-alias-state-warn-primary, #f0a441)' },
+        }, '已在生词本 · 未收录')
+        : h('button', {
+          key: 'save',
+          type: 'button',
+          title: `把 ${props.word || '这个词'} 加入生词本（释义留空）`,
+          onPointerDown: (event) => event.stopPropagation(),
+          onMouseDown: (event) => { event.preventDefault(); event.stopPropagation() },
+          onClick: (event) => {
+            event.preventDefault()
+            event.stopPropagation()
+            props.onToggleStar?.()
+          },
+          style: {
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 5,
+            padding: '3px 11px',
+            borderRadius: 7,
+            border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.4))',
+            background: 'transparent',
+            color: 'var(--dsw-alias-brand-primary, #4d6bfe)',
+            font: 'inherit',
+            fontSize: '.92em',
+            cursor: 'pointer',
+          },
+        }, '仍要收藏'),
+      h('span', {
+        key: 'hint',
+        style: { fontSize: '.86em', color: 'var(--dsw-alias-label-secondary, #999)' },
+      }, '收录后可以在生词本里自己写备注'),
+    ]),
+  ])
 }

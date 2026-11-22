@@ -8,11 +8,16 @@
  * 点击与划选是明确的动作，不需要猜。
  */
 
-import { loadUx, tagLabel } from './config.js'
+import { loadUx, STORAGE_KEY, tagLabel } from './config.js'
 import { briefOf, buildIndex, describeEntry, loadDictionary, lookup } from './dict.js'
 import { fetchAsset, humanizeError } from './net.js'
 import { computeOverlayRect } from './position.js'
-import { ensureStyle, PopoverBody, PhraseBody, UI_ATTR } from './overlay.js'
+import { ensureStyle, MarkerLayerHost, PopoverBody, PhraseBody, UI_ATTR } from './overlay.js'
+import {
+  buildMarks, buildHighlightRanges, applyHighlights, clearHighlights, highlightCss,
+  supportsHighlight, bindRecalcEvents, createRecalcScheduler,
+  expandWordSet, MARK_MAX,
+} from './marker.js'
 import { CardRoot } from './card.js'
 import { caretAtPoint, DEFAULT_MAX_HAN_RATIO, rangeRects, readSelection, unionOf } from './selection.js'
 import { SELECTORS } from './hit.js'
@@ -35,7 +40,12 @@ const SELF_SELECTOR = `[${UI_ATTR}]`
  *   - 点浮层 → 展开完整词条
  *   - 点浮层外面 / Esc → 关闭
  *
- * 刻意**不**做「未收录」提示：变量名与专有名词太多，逐个提示比沉默更吵。
+ * 关于「未收录」提示（v1.3 起改口径）：
+ *   v1 是**一律静默**，理由是变量名与专有名词太多，逐个提示比沉默更吵。
+ *   设计-v2 §E2 改成：**用户主动点开**一个词而词库查不到时，弹一句
+ *   「词库未收录，已加入查词记录」并给「仍要收藏」出口 —— 用户主动去点它，
+ *   往往正是因为想记住它，这时沉默等于丢掉了他的意图。
+ *   被动扫描（marker 着色）依旧完全静默，不产生任何提示。
  */
 
 /**
@@ -90,12 +100,17 @@ export function apply(ctx) {
     const doc = typeof document !== 'undefined' ? document : undefined
     if (!doc) return
 
+    /** 注入/刷新样式。::highlight 的 color 依赖用户配置，改色后要重刷（即时生效）。 */
     let disposeStyle = () => {}
-    try {
-      disposeStyle = ensureStyle(doc)
-    } catch (error) {
-      warn('样式注入失败', error)
+    const refreshStyle = (appearance) => {
+      try {
+        // 幂等：内容没变就不动节点（ensureStyle 内部比对），变了才替换 textContent
+        disposeStyle = ensureStyle(doc, appearance)
+      } catch (error) {
+        warn('样式注入失败', error)
+      }
     }
+    refreshStyle(undefined)
 
     // 取 slots 优先用 ctx.get（安全探测），取不到再退回属性访问。
     //
@@ -117,6 +132,9 @@ export function apply(ctx) {
 
     const storage = safeStorage()
     const ux = loadUx(storage)
+    // 拿到用户配置后再刷一次：首次调用时 appearance 还是 undefined，::highlight
+    // 只能是默认色，这里补上用户实际选的颜色/是否显示已掌握。
+    refreshStyle(ux.appearance)
 
     const runtime = {
       ux,
@@ -133,6 +151,8 @@ export function apply(ctx) {
       translateError: '',
       /** skip 时的提示文字 */
       notice: '',
+      /** 词库未收录时用户主动点开的那个词头（notice 形态的「仍要收藏」要用） */
+      missKey: '',
       placement: null,
       listeners: new Set(),
       /** 生词本实例与它的版本号（用来触发重渲染） */
@@ -145,13 +165,230 @@ export function apply(ctx) {
       packsMerged: false,
       /** 词库包目录的真实路径，由宿主 health 接口告知 */
       packsDir: '',
+      /** 生词着色：这一帧要画的色块（marker.js buildMarks 的结果，几何已算好） */
+      marks: [],
+      /** 着色用的词集（expandWordSet 结果：键 → 是否已掌握） */
+      markKeys: new Map(),
+      /** 当前着色命中的词数（Highlight 路径下没有色块，只有这个计数） */
+      markCount: 0,
+      /** 上一次看到的 localStorage 原文，用来发现设置页改了外观而不必轮询 */
+      uxRaw: '',
+      /** 着色诊断：单帧耗时、色块数、时间戳（性能预算 <16ms 的观测点） */
+      markStats: { lastMs: 0, count: 0, at: 0 },
     }
+
+    /** 卸载时的清理函数栈。着色接线那一段已经要往里 push，所以放在最前面。 */
+    const dispose = []
 
     const notify = () => {
       for (const listener of runtime.listeners) {
         try { listener() } catch { /* ignore */ }
       }
     }
+
+    /* ── 生词着色（设计-v2 §C2） ─────────────────────────────────────────
+     *
+     * 这里只做**接线**：词集展开、扫描、量矩形、裁剪、截断全在 marker.js 的纯函数里，
+     * 本段负责「什么时候算」与「把结果放进 runtime 让 React 画」。
+     *
+     * 三条硬约束：
+     *   1. 绝不改正文 DOM —— 这里只有读：createTreeWalker 遍历文本节点、
+     *      Range.getClientRects 量矩形。写只写本插件覆盖层里的 div。
+     *   2. 不许每帧扫全文 —— 滚动节流 120ms、正文变化防抖 250ms（§G 硬要求）、
+     *      resize 立即重算，三个入口都由 createRecalcScheduler 合并。
+     *   3. 色块上限 400，超了按距视口中心距离取最近的（capMarks 内部做）。
+     */
+
+    /** 重读 localStorage 里的界面参数（设置页改完要立刻生效，不等重启）。 */
+    const reloadUx = () => {
+      const next = loadUx(storage)
+      runtime.ux = next
+      runtime.uxRaw = rawUx()
+      // 改色/开关 → 重刷 ::highlight 规则（这是「即时生效」的落点，不等重启）
+      refreshStyle(next.appearance)
+      return next
+    }
+
+    const rawUx = () => {
+      try {
+        const raw = storage?.getItem?.(STORAGE_KEY)
+        return typeof raw === 'string' ? raw : ''
+      } catch {
+        return ''
+      }
+    }
+
+    /**
+     * 重算词集。生词本或词库或「已掌握也淡色」开关变化时都要重来。
+     *
+     * @returns {Map<string, boolean>} 键 → 是否已掌握
+     */
+    const rebuildMarkKeys = () => {
+      const keys = expandWordSet({
+        entries: runtime.wordbook?.list() ?? [],
+        dict: runtime.dict,
+        markKnown: runtime.ux.appearance.markKnown === true,
+      })
+      runtime.markKeys = keys
+      return keys
+    }
+
+    /** 一次重算：算出色块放进 runtime，然后通知 React 重绘。 */
+    const recalcMarks = () => {
+      const started = Date.now()
+      // 兜底：有些环境给 localStorage 的属性加了只读描述符，setItem 拦不住，
+      // 那时靠这里比对原文发现「用户刚在设置页改了颜色」（改色/关闭即时生效）。
+      try {
+        const raw = rawUx()
+        if (raw !== runtime.uxRaw) reloadUx()
+      } catch { /* ignore */ }
+      const appearance = runtime.ux.appearance
+      const keys = runtime.markKeys instanceof Map && runtime.markKeys.size > 0
+        ? runtime.markKeys
+        : rebuildMarkKeys()
+
+      // markWords 关掉 / 词集空 / 词库没就绪 → 清干净返回，什么节点都不碰（§C2.5）
+      const off = appearance.markWords === false || keys.size === 0 || runtime.dict === null
+      if (off) {
+        try { clearHighlights(typeof window !== 'undefined' ? window : undefined) } catch { /* ignore */ }
+        const had = runtime.marks.length > 0 || runtime.markCount > 0
+        runtime.marks = []
+        runtime.markCount = 0
+        runtime.markStats = { lastMs: 0, count: 0, at: started, mode: highlightOn ? 'highlight' : 'overlay' }
+        if (had) notify()
+        return
+      }
+
+      // ── 主路径：Highlight API（只要字色，滚动天然跟字） ──
+      if (highlightOn) {
+        let built = null
+        try {
+          built = buildHighlightRanges({ doc, keys })
+        } catch {
+          built = null
+        }
+        if (built) {
+          const applied = applyHighlights({
+            scope: typeof window !== 'undefined' ? window : undefined,
+            ranges: built.ranges,
+            knownRanges: appearance.markKnown === true ? built.knownRanges : [],
+          })
+          if (applied.ok) {
+            runtime.marks = []
+            runtime.markCount = built.stats.words + built.stats.known
+            runtime.markStats = {
+              lastMs: Date.now() - started,
+              count: runtime.markCount,
+              at: started,
+              mode: 'highlight',
+            }
+            notify()
+            return
+          }
+        }
+        // Highlight 注册失败（半支持的环境）→ 落到下面走色块回退
+      }
+
+      // ── 回退路径：overlay 色块（老浏览器；行为与 v2 早期一致） ──
+      let marks = []
+      try {
+        marks = buildMarks({ doc, keys, max: MARK_MAX })
+      } catch {
+        // 流式输出期间节点可能刚好被宿主换掉，量矩形炸了不该带走整个插件
+        marks = []
+      }
+      runtime.marks = marks
+      runtime.markCount = marks.length
+      runtime.markStats = { lastMs: Date.now() - started, count: marks.length, at: started, mode: 'overlay' }
+      notify()
+    }
+
+    const markScheduler = createRecalcScheduler({ run: recalcMarks })
+
+    /**
+     * 着色主路径的开关：环境支持 CSS Custom Highlight API 就用它（用户裁定只要字色）。
+     *
+     * Highlight 的颜色是浏览器渲染时跟着文字走的，**滚动不需要任何重算** ——
+     * 之前那套 rAF 逐帧重测 / 双速架构就是为色块偏移打的补丁，换成 Highlight 后
+     * 那套整体删掉了（纯滚动不改文字内容时 ranges 仍有效）。
+     *
+     * 不支持的环境回退到色块方案（buildMarks + MarkerLayer），行为不变。
+     */
+    const highlightOn = supportsHighlight(typeof window !== 'undefined' ? window : undefined)
+
+    /**
+     * 发现设置页改了外观就重载 + 重算。
+     *
+     * 为什么要这一层：settings.js 写的是 localStorage，而同一个 document 里
+     * `storage` 事件**不会**触发（那个事件只发到别的窗口/标签页）。所以要么
+     * 拦 setItem，要么轮询原文。两个都做：拦得到就是即时的，拦不到（有些环境
+     * 把 localStorage 的方法做成只读）就靠下一次渲染或重算时比对原文兜住。
+     */
+    const onUxMaybeChanged = () => {
+      const raw = rawUx()
+      if (raw === runtime.uxRaw) return
+      reloadUx()
+      notify()
+      markScheduler.request()
+    }
+
+    const patchStorageWatch = () => {
+      if (!storage || typeof storage.setItem !== 'function') return () => {}
+      const original = storage.setItem
+      let ok = false
+      try {
+        storage.setItem = function patchedSetItem(key, value) {
+          const result = original.call(this, key, value)
+          try { if (key === STORAGE_KEY) onUxMaybeChanged() } catch { /* ignore */ }
+          return result
+        }
+        ok = true
+      } catch {
+        ok = false
+      }
+      return () => {
+        if (!ok) return
+        try { storage.setItem = original } catch { /* ignore */ }
+      }
+    }
+
+    runtime.uxRaw = rawUx()
+    if (storage !== undefined && typeof storage.getItem === 'function' && runtime.uxRaw === '') {
+      // 首帧没有存档：把当前默认值记成基准，避免第一次比对就误判成「变了」
+      runtime.uxRaw = rawUx()
+    }
+    dispose.push(patchStorageWatch())
+
+    /**
+     * 首扫：词库 ready 且生词本 ready 之后，在空闲帧跑一次。
+     *
+     * 不放在 apply 里同步跑：词库要 30ms 解析、生词本要读 KV，
+     * 抢首帧会白屏一瞬（§C2.4「初次」）。
+     */
+    const scheduleMarkScan = () => {
+      const run = () => {
+        try {
+          rebuildMarkKeys()
+          recalcMarks()
+        } catch (error) {
+          warn('着色首扫失败', error)
+        }
+      }
+      if (typeof requestIdleCallback === 'function') {
+        const handle = requestIdleCallback(run, { timeout: 3000 })
+        dispose.push(() => { try { cancelIdleCallback(handle) } catch { /* ignore */ } })
+      } else {
+        const handle = setTimeout(run, 300)
+        dispose.push(() => clearTimeout(handle))
+      }
+    }
+
+    // 滚动（含流式程序滚动）/ 正文变化 / resize 三个入口。
+    //
+    // 走 Highlight 时纯滚动不需要重算（颜色跟文字走），但滚动仍要触发一次节流重算：
+    // 滚动会带来「新一批文本节点进入 DOM」的可能（虚拟列表），且成本只有一次
+    // ranges 重建（不量矩形，比色块路径更便宜）。resize 会改变换行，必须重算。
+    dispose.push(bindRecalcEvents({ doc, scheduler: markScheduler }))
 
     let machine = null
     let translateAbort = null
@@ -194,6 +431,11 @@ export function apply(ctx) {
         runtime.dict = await loadDictionary()
         runtime.status = 'ready'
         runtime.errorMessage = ''
+        // 词库到手才能展开变位 → 词集重算 + 首扫（生词本可能已经 ready 了）
+        try {
+          rebuildMarkKeys()
+          markScheduler.request()
+        } catch { /* ignore */ }
         void mergePacks()
       } catch (error) {
         runtime.status = 'error'
@@ -285,10 +527,28 @@ export function apply(ctx) {
       runtime.translateError = ''
       runtime.translating = false
       runtime.notice = ''
+      runtime.missKey = ''
 
       if (selection.kind === 'word') {
         const hit = lookupWord(selection.key)
         if (hit === null) {
+          // 词库未收录。设计-v2 §E2 分两种情况：
+          //   - 用户**主动点**这个词（单击取词 / 双击选词）→ 弹一句说明，
+          //     并记录这次查词（touch 对不在生词本里的词是 no-op，所以这里
+          //     先记进 runtime 里，等用户真收藏了才会落库）；
+          //   - 不是主动点的（理论上不会走到这）→ 保持 v1 的静默。
+          if (selection.byPick === true) {
+            runtime.result = null
+            runtime.entryRaw = null
+            runtime.missKey = selection.key
+            runtime.notice = '词库未收录，已加入查词记录'
+            runtime.mode = 'notice'
+            runtime.placement = placeFor('popover', bounds)
+            // 主动点开的词先记一次「查过」：已在生词本里就 seen+1
+            void runtime.wordbook?.touch?.(selection.key)
+            notify()
+            return
+          }
           runtime.mode = 'none'
           runtime.placement = null
           notify()
@@ -296,8 +556,13 @@ export function apply(ctx) {
         }
         runtime.result = hit
         runtime.entryRaw = hit.entry
+        runtime.missKey = ''
         runtime.mode = 'popover'
         runtime.placement = placeFor('popover', bounds)
+        // 设计 §E2：浮层一弹出来就算「查过一次」（seen+1，lastSeenAt 更新）。
+        // touch 对不在生词本里的词是 no-op —— 只记录已收藏词的查词次数，
+        // 不会因为随手点一个词就往生词本里塞记录。
+        void runtime.wordbook?.touch?.(selection.key)
         notify()
         return
       }
@@ -338,6 +603,8 @@ export function apply(ctx) {
         key: hit.text.replace(/[\u2018\u2019]/g, "'").toLowerCase(),
         rects,
         collapsed: true,
+        // 用户明确点了一个词：miss 时可以弹提示（设计 §E2）
+        byPick: true,
       })
       machine.feed({ kind: 'select' })
       return runtime.mode === 'popover'
@@ -350,12 +617,12 @@ export function apply(ctx) {
       runtime.entryRaw = null
       runtime.translation = null
       runtime.notice = ''
+      runtime.missKey = ''
       runtime.placement = null
       machine.feed({ kind: 'dismiss' })
       notify()
     }
 
-    const dispose = []
     let downAt = null
     let downSelectionText = ''
     let lastText = ''
@@ -457,7 +724,8 @@ export function apply(ctx) {
       if (inComposer(anchorNode)) return false
       if (selection.text === lastText && runtime.mode !== 'none') return true
       lastText = selection.text
-      applySelection(selection)
+      // 划选/双击也是用户主动指向某个词，miss 时同样该给提示（短语另走翻译分支）
+      applySelection({ ...selection, byPick: selection.kind === 'word' })
       machine.feed({ kind: 'select' })
       return true
     }
@@ -566,27 +834,17 @@ export function apply(ctx) {
      * 用户要的是「这个词我背过」，而不是「这个字符串我背过」。
      */
     const collectBookSet = (rt) => {
-      const out = new Set()
-      if (!rt.wordbook || rt.status !== 'ready' || !rt.dict) {
-        for (const entry of rt.wordbook?.list() ?? []) out.add(entry.head)
-        return out
-      }
-      for (const entry of rt.wordbook.list()) {
-        out.add(entry.head)
-        const node = rt.dict.entries[entry.head]
-        if (!node) continue
-        for (let i = 5; i < node.length; i += 1) {
-          const slot = node[i]
-          if (typeof slot !== 'string') continue
-          for (const part of slot.split('/')) {
-            const colon = part.indexOf(':')
-            if (colon <= 0) continue
-            const form = part.slice(colon + 1).trim().toLowerCase()
-            if (form) out.add(form)
-          }
-        }
-      }
-      return out
+      // 词集展开的规则（槽 5 起、`p:ran/i:running`、词头优先）只在 marker.js 里写一份，
+      // 这里复用同一份实现，避免「卡片上标红的变位」和「正文着色的变位」两套口径漂移。
+      //
+      // 与着色词集的唯一差别：卡片里 known 的词也要参与（用户的词条上要看得出
+      // 「这个词我背过」，只是着色的默认口径不含 known）。所以这里 markKnown 恒为 true。
+      const keys = expandWordSet({
+        entries: rt.wordbook?.list() ?? [],
+        dict: rt.status === 'ready' ? rt.dict : null,
+        markKnown: true,
+      })
+      return new Set(keys.keys())
     }
 
     /**
@@ -620,12 +878,26 @@ export function apply(ctx) {
         translating: runtime.translating,
         translateError: runtime.translateError,
         placement: runtime.placement,
+        notice: runtime.notice,
+        missKey: runtime.missKey,
         status: runtime.status,
         errorMessage: runtime.errorMessage,
         ux: runtime.ux,
         bookVersion: runtime.bookVersion,
         inBook: runtime.selection ? runtime.wordbook?.has(runtime.selection.key) === true : false,
+        /** 当前词的词条（浮层要显示「已在生词本 · 状态」，见设计 §C3） */
+        inBookEntry: runtime.selection && runtime.wordbook
+          ? (runtime.wordbook.get(runtime.selection.key) ?? null)
+          : null,
         inBookSet: collectBookSet(runtime),
+        /** 着色要画的色块（几何已由 marker.js 算好） */
+        marks: runtime.marks,
+        /** 着色诊断：单帧耗时与色块数，设置页与单测可读 */
+        markStats: runtime.markStats ?? { lastMs: 0, count: 0, at: 0, mode: highlightOn ? 'highlight' : 'overlay' },
+        /** 当前着色词数（Highlight 路径用；overlay 路径等于色块数） */
+        markCount: runtime.markCount ?? 0,
+        /** 当前着色走哪条路径：'highlight' 主路径 / 'overlay' 回退 */
+        markMode: highlightOn ? 'highlight' : 'overlay',
         family: runtime.selection && runtime.dict
           ? familyOf(runtime.dict, runtime.selection.key)
           : { inflections: [], derived: [] },
@@ -652,6 +924,23 @@ export function apply(ctx) {
         onToggleStar: () => {
           if (!runtime.wordbook || !runtime.selection) return
           void runtime.wordbook.toggle(runtime.selection.key)
+        },
+        /**
+         * 词库未收录的词「仍要收藏」（设计 §E2）。
+         *
+         * 用 add(key,'manual') 而不是 toggle：notice 形态下用户点的是
+         * 「要收下它」，不是「切换状态」。gloss 留空 —— 我们确实没有释义，
+         * 不编一个出来（CETgo 口径）。管理台会给它「未收录」徽章。
+         */
+        onSaveMiss: () => {
+          const key = runtime.missKey
+          if (!key || !runtime.wordbook) return
+          void Promise.resolve(runtime.wordbook.add(key, 'manual')).then(() => {
+            runtime.missKey = ''
+            runtime.notice = '词库未收录，已加入生词本（释义留空，可在设置里写备注）'
+            notify()
+            markScheduler?.request?.()
+          }).catch(() => { /* 写盘失败：notice 保持原样 */ })
         },
         onSelectWord: (word) => {
           if (typeof word !== 'string' || word === '') return
@@ -792,11 +1081,20 @@ export function apply(ctx) {
       runtime.wordbook = createWordbook({ storage: hostStorage, local: storage })
       runtime.wordbook.subscribe(() => {
         runtime.bookVersion += 1
+        // 生词本一变：词集要重算，色块也要重扫（收藏/移出/改状态的即时反馈，§C2.4）
+        try {
+          rebuildMarkKeys()
+          markScheduler.request()
+        } catch (error) {
+          warn('生词本变化后重算着色失败', error)
+        }
         notify()
       })
       await runtime.wordbook.ready()
       runtime.bookVersion += 1
       notify()
+      // 词库与生词本都就绪 → 空闲帧首扫（§C2.4「初次」）
+      scheduleMarkScan()
     }
 
     const scheduleLoad = () => {
@@ -832,6 +1130,8 @@ export function apply(ctx) {
         try { translateAbort?.abort() } catch { /* ignore */ }
         try { machine.dispose() } catch { /* ignore */ }
         try { disposeStyle() } catch { /* ignore */ }
+        // 关键：卸载后必须清掉 CSS.highlights 注册，否则正文会一直挂着我们的字色
+        try { clearHighlights(typeof window !== 'undefined' ? window : undefined) } catch { /* ignore */ }
       }, 'dsh-hover-dict: 监听与 slot 清理')
     }
   } catch (error) {
@@ -867,10 +1167,21 @@ export function OverlayHost(props) {
     if (!snapshot) return null
     const {
       mode, selection, result, entryRaw, translation, translating, translateError,
-      placement, ux, status, errorMessage, inBook, inBookSet, family, roots,
+      placement, ux, status, errorMessage, inBook, inBookEntry, inBookSet, family, roots,
+      marks, notice, missKey,
     } = snapshot
     const actions = props.actions ?? {}
     const children = []
+
+    // ── 生词着色层（设计 §C2.2）：**第一个** child ──
+    // 放第一个是为了让它画在浮层/卡片之下（DOM 顺序 + CSS z-index:0 双保险）。
+    // 它 pointer-events:none，点击穿透到正文，现有单击取词不受影响（§C3）。
+    // markWords=false 时 MarkerLayerHost 直接返回 null，等于完全不变色。
+    children.push(h(MarkerLayerHost, {
+      key: 'markers',
+      marks,
+      appearance: ux?.appearance,
+    }))
 
     if (mode === 'popover' && placement && result) {
       children.push(h('div', {
@@ -889,6 +1200,8 @@ export function OverlayHost(props) {
         appearance: ux.appearance,
         tagLabel: props.tagLabel,
         inBook,
+        // 「已在生词本 · 状态」小字行的数据源（§C3）
+        entry: inBookEntry,
         onToggleStar: () => actions.onToggleStar?.(),
       })))
     }
@@ -915,6 +1228,9 @@ export function OverlayHost(props) {
     }
 
     if (mode === 'notice' && placement && notice) {
+      // 设计 §E2：词库未收录时给一句说明 + 「仍要收藏」。
+      // 已经收下了（inBook 且 missKey 已清空）就不再显示按钮，避免重复点。
+      const canSave = missKey !== '' && inBook !== true
       children.push(h('div', {
         key: 'notice',
         className: 'hd-pop',
@@ -922,10 +1238,48 @@ export function OverlayHost(props) {
           top: `${placement.top}px`,
           left: `${placement.left}px`,
           pointerEvents: 'auto',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
           color: 'var(--dsw-alias-label-secondary, #666)',
         },
         onMouseDown: (event) => { event.preventDefault(); event.stopPropagation() },
-      }, h('div', { className: 'hd-more' }, notice)))
+      }, [
+        h('div', { key: 'text', className: 'hd-more' }, notice),
+        canSave
+          ? h('div', { key: 'row', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } }, [
+            h('button', {
+              key: 'save',
+              type: 'button',
+              className: 'hd-star',
+              title: '把这个词加入生词本（释义留空）',
+              onMouseDown: (event) => { event.preventDefault(); event.stopPropagation() },
+              onClick: (event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                actions.onSaveMiss?.()
+              },
+              style: {
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                padding: '3px 11px',
+                borderRadius: 7,
+                border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.4))',
+                background: 'transparent',
+                color: 'var(--dsw-alias-brand-primary, #4d6bfe)',
+                font: 'inherit',
+                fontSize: '12px',
+                cursor: 'pointer',
+              },
+            }, '仍要收藏'),
+            h('span', {
+              key: 'hint',
+              style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary, #999)' },
+            }, '释义留空，可在生词本里自己写备注'),
+          ])
+          : null,
+      ]))
     }
 
     if (mode === 'phrase' && placement) {

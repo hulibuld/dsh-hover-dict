@@ -12,11 +12,27 @@
  * 样式全部走 `--dsw-alias-*` 语义 token，不写死颜色，不自己判断暗色主题。
  */
 
+import { highlightCss, MarkerLayer } from './marker.js'
+
 /** 覆盖层根节点的标记属性。hit.js 靠它排除「自己身上的字」。 */
 export const UI_ATTR = 'data-hover-dict-ui'
 
 /** 样式节点的稳定 id。改样式内容不需要改它。 */
 const STYLE_ID = 'dsh-hover-dict/styles'
+
+/**
+ * 生词状态的短标签与色点（设计 §A2 四态）。
+ *
+ * 放在 overlay 而不是 wordbook：这是**展示层**映射，与数据层无关，
+ * 而且浮层与色块共用同一套色（unknown 红 / fuzzy 橙 / known 绿）。
+ */
+const WORD_STATE_LABELS = { new: '未学', unknown: '不认识', fuzzy: '记错', known: '已掌握' }
+const WORD_STATE_TONES = {
+  new: 'var(--dsw-alias-label-secondary, #666)',
+  unknown: 'var(--dsw-alias-state-error-primary, #e5484d)',
+  fuzzy: 'var(--dsw-alias-state-warn-primary, #f0a441)',
+  known: 'var(--dsw-alias-state-success-primary, #2f9e44)',
+}
 
 /** 卡片与浮层的基础样式。全部用宿主主题 token。 */
 const CSS = `
@@ -220,6 +236,36 @@ const CSS = `
   font-weight: 600;
   color: var(--dsw-alias-brand-primary, inherit);
 }
+/* ── 生词着色层（设计-v2 §C2.2）：垫在正文文字底下的色块 ──
+   pointer-events:none 让点击穿透到正文，现有的单击取词不受影响（§C3）。
+   z-index:0 让它在浮层（.hd-pop/.hd-card 各自定位）之下。
+   底色浓度与下划线由 marker.js 的 styleOfMark 逐块内联给出（用户自选色是唯一例外）。 */
+[${UI_ATTR}] .hd-marks {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  contain: layout style;
+  z-index: 0;
+}
+[${UI_ATTR}] .hd-mark {
+  position: fixed;
+  pointer-events: none;
+}
+/* 浮层里的「已在生词本 · 状态」小字行（§C3） */
+[${UI_ATTR}] .hd-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: .86em;
+  line-height: 1.4;
+  color: var(--dsw-alias-label-secondary, #666);
+}
+[${UI_ATTR}] .hd-state-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+}
 `
 
 /**
@@ -231,19 +277,22 @@ const CSS = `
  * @param {Document} doc
  * @returns {() => void} disposer，卸载时移除这个 style 节点
  */
-export function ensureStyle(doc) {
+export function ensureStyle(doc, appearance) {
   if (!doc || typeof doc.createElement !== 'function') return () => {}
+  // ::highlight 的 color 由用户配置决定，所以整份样式内容包含它。
+  // 改色时 ensureStyle 会被重新调用（内容变了就替换 textContent），即时生效。
+  const css = `${CSS}\n${highlightCss(appearance ?? {})}\n`
   const selector = `style[data-plugin-css=${JSON.stringify(STYLE_ID)}]`
   let node = doc.querySelector(selector)
   if (node === null) {
     node = doc.createElement('style')
     node.dataset.pluginCss = STYLE_ID
-    node.textContent = CSS
+    node.textContent = css
     const head = doc.head ?? doc.documentElement
     if (head) head.appendChild(node)
     else return () => {}
-  } else if (node.textContent !== CSS) {
-    node.textContent = CSS
+  } else if (node.textContent !== css) {
+    node.textContent = css
   }
   return () => {
     try {
@@ -252,6 +301,27 @@ export function ensureStyle(doc) {
       // 节点已经被宿主清掉了，无事可做
     }
   }
+}
+
+/**
+ * 生词着色层宿主：把 marker.js 的 MarkerLayer 包一层，做两件事：
+ *   - `markWords === false` 时**整个不渲染**（用户要求的「直接不变颜色」）；
+ *   - 保证它排在 OverlayHost children 的**第一个**，画在浮层/卡片之下（§C2.2 z-index）。
+ *
+ * 真正的色块几何由 app.js 的 buildMarks 算好传进来 —— 这个组件不扫描、不监听、不量矩形，
+ * 渲染路径上没有任何重活，所以不会拖帧也不会有抛错风险。
+ *
+ * @param {object} props
+ * @param {Array<object>} props.marks
+ * @param {object} [props.appearance]
+ * @returns {import('react').ReactElement | null}
+ */
+export function MarkerLayerHost(props) {
+  const appearance = props?.appearance
+  if (!appearance || appearance.markWords === false) return null
+  const marks = Array.isArray(props?.marks) ? props.marks : []
+  if (marks.length === 0) return null
+  return h(MarkerLayer, { marks, appearance })
 }
 
 /**
@@ -302,6 +372,19 @@ export function PopoverBody(props) {
     ))
   }
   if (hasMore) children.push(h('div', { key: 'more', className: 'hd-more' }, '点击查看完整词条'))
+
+  // 「已在生词本 · 状态」小字行（设计 §C3）：点中被着色的词时，
+  // 用户需要知道「这个词我标成什么了」，否则红色色块等于没有解释。
+  if (inBook) {
+    const entry = props.entry
+    const state = typeof entry?.state === 'string' ? entry.state : ''
+    const label = WORD_STATE_LABELS[state] ?? ''
+    const tone = WORD_STATE_TONES[state] ?? 'var(--dsw-alias-label-secondary, #666)'
+    children.push(h('div', { key: 'state', className: 'hd-state' },
+      h('span', { className: 'hd-state-dot', style: { background: tone } }),
+      h('span', null, label ? `已在生词本 · ${label}` : '已在生词本'),
+    ))
+  }
 
   const tags = Array.isArray(brief.tags) && appearance?.showTags !== false
     ? brief.tags.map((tag) => h('span', { key: tag, className: 'hd-tag' }, tagLabel ? tagLabel(tag) : tag))

@@ -21,7 +21,9 @@
  */
 
 
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import {
+  chmodSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync,
+} from 'node:fs'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gzipSync } from 'node:zlib'
@@ -286,6 +288,22 @@ export function createHandler(options) {
   const logger = options.logger ?? SILENT_LOGGER
   const enabled = config?.enabled !== false
 
+  /** 有道 Cookie 存储：内存 + dataDir/youdao-cookie.json（0o600）。 */
+  const youdaoStore = options.youdaoStore ?? createYoudaoStore(dataDir, logger)
+
+  /**
+   * 外网 fetch。设计 §D2 要求可注入（`youdaoFetch`），
+   * 这样宿主测试能用 mock 跑分页与降级，不依赖外网。
+   */
+  const youdaoFetch = typeof options.youdaoFetch === 'function'
+    ? options.youdaoFetch
+    : (...args) => globalThis.fetch(...args)
+
+  /** 每页间隔可注入，测试把它调 0 才跑得快；线上固定 ≥400ms。 */
+  const youdaoGapMs = Number.isFinite(options.youdaoGapMs)
+    ? Math.max(0, Math.min(options.youdaoGapMs, YOUDAO_PAGE_GAP_MS))
+    : YOUDAO_PAGE_GAP_MS
+
   /**
    * gzip 结果按 ETag 缓存。词库 3 MB 压一次约 40 ms，
    * 每个请求重压是不可接受的，但缓存整份压缩结果只有 1.4 MB。
@@ -304,15 +322,26 @@ export function createHandler(options) {
         : ''
       const isTranslate = rawTail0 === 'translate'
 
-      if (method !== 'GET' && method !== 'HEAD') {
-        if (!(isTranslate && method === 'POST')) {
-          res.setHeader('allow', 'GET, HEAD')
-          return sendError(res, 405, 'E_METHOD', '只支持 GET 与 HEAD', false)
-        }
+      // 每个尾段允许的方法。不在表里的一律只读（GET/HEAD）。
+      const WRITE_ROUTES = {
+        translate: ['POST'],
+        'youdao/cookie': ['POST', 'DELETE'],
+        'youdao/sync': ['POST'],
       }
-      if (isTranslate && (method === 'GET' || method === 'HEAD')) {
-        res.setHeader('allow', 'POST')
-        return sendError(res, 405, 'E_METHOD', '翻译接口只接受 POST', method === 'HEAD')
+      const allowed = WRITE_ROUTES[rawTail0]
+
+      if (allowed !== undefined) {
+        if (!allowed.includes(method)) {
+          // HEAD 也算只读探测：写路由不接受，但 allow 头要列全
+          res.setHeader('allow', allowed.join(', '))
+          const label = rawTail0 === 'translate'
+            ? '翻译接口只接受 POST'
+            : `该接口只接受 ${allowed.join(' 与 ')}`
+          return sendError(res, 405, 'E_METHOD', label, method === 'HEAD')
+        }
+      } else if (method !== 'GET' && method !== 'HEAD') {
+        res.setHeader('allow', 'GET, HEAD')
+        return sendError(res, 405, 'E_METHOD', '只支持 GET 与 HEAD', false)
       }
 
       // 先按 URL 解析路径，再对尾段单独 decode。
@@ -334,6 +363,17 @@ export function createHandler(options) {
       // 用户没开就没法翻译。而 llm 是宿主必然挂载的核心服务，用它更可靠。
       if (tail === 'translate' && method === 'POST') {
         return handleTranslate(req, res, llm)
+      }
+
+      // ── 有道同步四路由（设计 v2 §D2）──
+      if (tail === 'youdao/cookie') {
+        return handleYoudaoCookie(req, res, method, youdaoStore, youdaoFetch)
+      }
+      if (tail === 'youdao/status') {
+        return handleYoudaoStatus(res, method, youdaoStore, youdaoFetch)
+      }
+      if (tail === 'youdao/sync') {
+        return handleYoudaoSync(req, res, method, youdaoStore, youdaoFetch, youdaoGapMs, logger)
       }
 
       if (tail === 'health') {
@@ -662,6 +702,619 @@ function parseCsvRows(text) {
   return rows
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 有道收藏夹抓取（设计 v2 §D2）
+//
+// 方案定死：宿主侧代理 + 用户粘贴 Cookie，不做账号密码登录。
+// Cookie 只活在宿主内存与 dataDir/youdao-cookie.json（0o600），
+// 不进 Config、不进 localStorage、不回显给前端。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Cookie 落盘文件名。加进 .gitignore / .npmignore，发包不带用户凭据。 */
+const YOUDAO_COOKIE_FILE = 'youdao-cookie.json'
+
+/** 单次外网请求超时，设计 §D2 定 15s。 */
+const YOUDAO_TIMEOUT_MS = 15000
+
+/** 翻页间隔下限：设计 §D2 要求每页 ≥400ms，别把有道打疼。 */
+const YOUDAO_PAGE_GAP_MS = 400
+
+/** 单页条数上限（设计定 limit≤100）。 */
+const YOUDAO_PAGE_LIMIT = 100
+
+/** 总页数上限：100×200 = 2 万词封顶（设计定总页≤200）。 */
+const YOUDAO_MAX_PAGES = 200
+
+/** 有道那边认 UA，没 UA 会拿到 SPA 空壳之外的东西。 */
+const YOUDAO_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+  + 'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36'
+
+/** 身份验证端点。未登录返回 `{"msg":"NO_LOGIN","code":2035}`（2026-11 实测）。 */
+const YOUDAO_ACCOUNT_URL = 'https://dict.youdao.com/login/acc/query/accountinfo'
+
+/**
+ * 新版网页生词本 API。
+ *
+ * 2026-11 实测形态：无 Cookie → HTTP 200 + `{"code":401,"msg":"用户未登录","data":null}`。
+ * 所以**先看 body.code，别看 HTTP 状态码** —— 它永远 200。
+ */
+function youdaoApiUrl(offset, limit) {
+  return `https://dict.youdao.com/wordbook/webapi/v2/word/list?limit=${limit}&offset=${offset}`
+}
+
+/** 旧版生词本 HTML 页（降级路径）。 */
+function youdaoHtmlUrl(page, itemPerPage = 15) {
+  return `https://dict.youdao.com/wordbook/wordlist?p=${page}&itemPerPage=${itemPerPage}`
+}
+
+/** 睡一会儿。限速用，测试里 mock fetch 时同样生效（400ms×页数，测试取小页数）。 */
+function sleep(ms) {
+  return new Promise((done) => { setTimeout(done, ms) })
+}
+
+/**
+ * 造一个 Cookie 存储：内存 + dataDir/youdao-cookie.json（0o600）。
+ *
+ * 读盘惰性：apply 是同步装配阶段，不能在里面 await IO。
+ * 写盘固定 chmod 0o600 —— writeFileSync 的 mode 只在**新建**时生效，
+ * 文件已存在（比如上次崩溃留下 0644）时必须再 chmod 一次。
+ *
+ * 落盘内容：{ cookie, savedAt, nickname, lastSyncAt, lastCount }。
+ * 任何路径都不把 cookie 明文回给前端。
+ */
+export function createYoudaoStore(dataDir, logger = SILENT_LOGGER) {
+  const path = join(dataDir, YOUDAO_COOKIE_FILE)
+  /** @type {{ cookie: string, savedAt: number, nickname: string, lastSyncAt: number, lastCount: number } | null} */
+  let cache = null
+
+  const empty = () => ({ cookie: '', savedAt: 0, nickname: '', lastSyncAt: 0, lastCount: 0 })
+
+  function normalize(raw) {
+    const base = empty()
+    if (!raw || typeof raw !== 'object') return base
+    return {
+      cookie: typeof raw.cookie === 'string' ? raw.cookie : '',
+      savedAt: Number.isFinite(raw.savedAt) ? raw.savedAt : 0,
+      nickname: typeof raw.nickname === 'string' ? raw.nickname : '',
+      lastSyncAt: Number.isFinite(raw.lastSyncAt) ? raw.lastSyncAt : 0,
+      lastCount: Number.isFinite(raw.lastCount) ? raw.lastCount : 0,
+    }
+  }
+
+  function load() {
+    if (cache !== null) return cache
+    try {
+      cache = normalize(JSON.parse(readFileSync(path, 'utf8')))
+    } catch {
+      // 没文件、坏 JSON 都当「没配过」，不当错误：用户第一次用就是这状态
+      cache = empty()
+    }
+    return cache
+  }
+
+  function persist(next) {
+    cache = next
+    try {
+      writeFileSync(path, JSON.stringify({
+        cookie: next.cookie,
+        savedAt: next.savedAt,
+        nickname: next.nickname,
+        lastSyncAt: next.lastSyncAt,
+        lastCount: next.lastCount,
+      }), { mode: 0o600 })
+      // 文件已存在时 mode 不生效，显式再设一次；Windows 上 chmod 是空操作，包在 try 里
+      try { chmodSync(path, 0o600) } catch { /* ignore */ }
+    } catch (error) {
+      logger.warn?.(`[dsh-hover-dict] 有道 Cookie 落盘失败：${error?.message ?? error}`)
+    }
+    return next
+  }
+
+  return {
+    path,
+    read: () => ({ ...load() }),
+    hasCookie: () => load().cookie !== '',
+    /** 存 Cookie（顺带记住验证到的昵称）。 */
+    save(cookie, nickname) {
+      const prev = load()
+      return { ...persist({
+        cookie,
+        savedAt: Date.now(),
+        nickname: typeof nickname === 'string' ? nickname : '',
+        lastSyncAt: prev.lastSyncAt,
+        lastCount: prev.lastCount,
+      }) }
+    },
+    setNickname(nickname) {
+      const prev = load()
+      if (prev.cookie === '') return { ...prev }
+      return { ...persist({ ...prev, nickname: typeof nickname === 'string' ? nickname : prev.nickname }) }
+    },
+    /** 同步成功后记一笔，status 要用。 */
+    markSync(count) {
+      const prev = load()
+      if (prev.cookie === '') return { ...prev }
+      return { ...persist({ ...prev, lastSyncAt: Date.now(), lastCount: Number.isFinite(count) ? count : 0 }) }
+    },
+    /** 清 Cookie。文件一起删，别留一份还能用的凭据在盘上。 */
+    clear() {
+      cache = empty()
+      try { unlinkSync(path) } catch { /* 本来就没有 */ }
+      return { ...cache }
+    },
+  }
+}
+
+/**
+ * POST /youdao/cookie —— 存 Cookie 并当场验证。
+ * DELETE /youdao/cookie —— 清除。
+ *
+ * 响应里**永远不带 cookie 明文**，只报 valid / nickname。
+ */
+async function handleYoudaoCookie(req, res, method, store, fetchImpl) {
+  if (method === 'DELETE') {
+    store.clear()
+    return sendJson(res, 200, { ok: true }, false)
+  }
+  if (method !== 'POST') {
+    return sendError(res, 405, 'E_METHOD', '该接口只接受 POST 与 DELETE', false)
+  }
+
+  const body = await readJsonBody(req)
+  const raw = typeof body?.cookie === 'string' ? body.cookie.trim() : ''
+  if (raw === '') {
+    return sendError(res, 400, 'E_EMPTY_COOKIE', '没有收到 Cookie，请把浏览器里复制的整段贴进来', false)
+  }
+  // 只做形状校验：必须在头里能拼出 `k=v`，否则是无意义输入
+  if (!/=/.test(raw)) {
+    return sendError(res, 400, 'E_BAD_COOKIE',
+      '这段不像 Cookie（应形如 name=value; name2=value2），请复制 Request Headers 里 Cookie 那一整行', false)
+  }
+  const cookie = raw.length > 8000 ? raw.slice(0, 8000) : raw
+
+  let verdict
+  try {
+    verdict = await verifyYoudaoCookie(fetchImpl, cookie)
+  } catch (error) {
+    // 网络错不是「Cookie 无效」：存下来让用户重试验证，错误如实报
+    store.save(cookie, '')
+    return sendError(res, 502, error?.code ?? 'E_YOUDAO_NETWORK',
+      error?.message ?? '验证时连不上有道，Cookie 已暂存，稍后可重试', false)
+  }
+
+  if (!verdict.valid) {
+    // 无效就不落盘：留着也没用，还会让人以为已经配好了
+    return sendJson(res, 200, {
+      ok: true,
+      valid: false,
+      message: 'Cookie 无效或已过期，请重新在浏览器里复制一次',
+    }, false)
+  }
+
+  const saved = store.save(cookie, verdict.nickname)
+  return sendJson(res, 200, {
+    ok: true,
+    valid: true,
+    ...(saved.nickname !== '' ? { nickname: saved.nickname } : {}),
+  }, false)
+}
+
+/**
+ * GET /youdao/status —— 只报状态，**不报 cookie 明文**。
+ *
+ * 带 Cookie 时顺手验一次（便宜：accountinfo 一个请求）。
+ * 验证失败但网络错的，hasCookie 仍为 true，valid=false 并带 reason，
+ * 让前端能区分「没配」与「配了但连不上」。
+ */
+async function handleYoudaoStatus(res, method, store, fetchImpl) {
+  const state = store.read()
+  const hasCookie = state.cookie !== ''
+  let valid = false
+  let nickname = state.nickname
+  let reason = ''
+
+  if (hasCookie) {
+    try {
+      const verdict = await verifyYoudaoCookie(fetchImpl, state.cookie)
+      valid = verdict.valid
+      reason = verdict.reason
+      if (verdict.nickname !== '') {
+        nickname = verdict.nickname
+        store.setNickname(verdict.nickname)
+      }
+    } catch (error) {
+      // 网络错 ≠ Cookie 无效：hasCookie 仍 true，reason 带上具体码让前端区分
+      valid = false
+      reason = typeof error?.code === 'string' ? error.code : 'network'
+    }
+  } else {
+    reason = 'no-cookie'
+  }
+
+  return sendJson(res, 200, {
+    ok: true,
+    hasCookie,
+    valid,
+    ...(nickname !== '' ? { nickname } : {}),
+    lastSyncAt: state.lastSyncAt,
+    lastCount: state.lastCount,
+    ...(reason !== '' ? { reason } : {}),
+  }, method === 'HEAD')
+}
+
+/**
+ * POST /youdao/sync —— 抓收藏夹，返回词表 + glosses 给前端。
+ *
+ * 前端拿到后自己调 `wordbook.importMany(words, 'youdao', {bookId, glosses})`：
+ * 生词本是浏览器 localStorage/KV 里的东西，宿主不碰，也就不会有「两边各存一份」。
+ *
+ * 响应：{ ok:true, added:number, dup:number, total:number, words:string[], glosses:{}, endpoint, pages }
+ *   added/dup 在这里只能报 0（不知道浏览器里已有的），前端 importMany 后自行改写数字。
+ */
+async function handleYoudaoSync(req, res, method, store, fetchImpl, gapMs, logger) {
+  const state = store.read()
+  if (state.cookie === '') {
+    return sendError(res, 401, 'E_YOUDAO_AUTH', '还没保存有道 Cookie，请先复制并保存', false)
+  }
+
+  const body = await readJsonBody(req)
+  const bookId = typeof body?.bookId === 'string' && body.bookId !== '' ? body.bookId : undefined
+
+  let result
+  try {
+    result = await fetchYoudaoSaved(fetchImpl, state.cookie, { gapMs })
+  } catch (error) {
+    const code = error?.code ?? 'E_YOUDAO_FAILED'
+    const status = code === 'E_YOUDAO_AUTH' ? 401
+      : code === 'E_YOUDAO_TIMEOUT' ? 504
+        : code === 'E_YOUDAO_ENDPOINT' ? 502
+          : code === 'E_YOUDAO_NETWORK' ? 502
+            : 500
+    logger.warn?.(`[dsh-hover-dict] 有道抓取失败：${code} ${error?.message ?? error}`)
+    // 失效**不清 Cookie**：设计 §D3 的「Cookie 失效（红条提示重新复制）」要求
+    // status 同时报 hasCookie:true + valid:false。删了就退化成「没配过」，
+    // 用户看不到该看的那条提示。真正清理由用户点「清除」触发（DELETE）。
+    const extra = error?.extra && typeof error.extra === 'object' ? error.extra : undefined
+    return sendError(res, status, code, error?.message ?? '抓取失败', false, extra)
+  }
+
+  const words = result.words.map((item) => item.head)
+  /** @type {Record<string,string>} */
+  const glosses = Object.create(null)
+  for (const item of result.words) {
+    if (item.gloss !== '') glosses[item.head.toLowerCase()] = item.gloss
+  }
+
+  store.markSync(words.length)
+
+  return sendJson(res, 200, {
+    ok: true,
+    // added/dup 由前端按自己库里已有情况算，这里给 0 之外的值会撒谎
+    added: 0,
+    dup: 0,
+    total: words.length,
+    words,
+    glosses,
+    endpoint: result.endpoint,
+    pages: result.pages,
+    ...(bookId !== undefined ? { bookId } : {}),
+  }, false)
+}
+
+/** 一个带 code 的失败。路由层把它翻成 {ok:false,error:{code,message}}。 */
+function youdaoError(code, message, extra) {
+  const error = new Error(message)
+  error.code = code
+  if (extra !== undefined) error.extra = extra
+  return error
+}
+
+/**
+ * 发一个 GET，返回 { status, text, location }。
+ *
+ * 不用 `redirect: 'manual'` 判登录：URL 是 dict.youdao.com 同一域名，
+ * 302 到 /login 也常见，两种都当「Cookie 失效」处理即可。
+ * 超时用 AbortController，15s。
+ */
+async function youdaoGet(fetchImpl, url, cookie) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null
+  const timer = controller ? setTimeout(() => controller.abort(), YOUDAO_TIMEOUT_MS) : null
+  try {
+    const res = await fetchImpl(url, {
+      method: 'GET',
+      redirect: 'manual',
+      headers: {
+        cookie,
+        'user-agent': YOUDAO_UA,
+        accept: 'application/json, text/html;q=0.9, */*;q=0.8',
+        'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      },
+      ...(controller ? { signal: controller.signal } : {}),
+    })
+    const status = Number(res?.status ?? 0)
+    let text = ''
+    try {
+      text = typeof res?.text === 'function' ? await res.text() : ''
+    } catch { text = '' }
+    const headers = res?.headers
+    const location = typeof headers?.get === 'function' ? (headers.get('location') ?? '') : ''
+    return { status, text, location }
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw youdaoError('E_YOUDAO_TIMEOUT', '连有道超时了（15 秒），请检查网络后再试')
+    }
+    throw youdaoError('E_YOUDAO_NETWORK',
+      `连不上有道：${error?.message ?? error}。若是网络问题，可改用「手动导入」`)
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/** 302/303 到登录页 = Cookie 失效。 */
+function looksLikeLoginRedirect(status, location) {
+  if (!(status === 301 || status === 302 || status === 303 || status === 307 || status === 308)) return false
+  return /login|signin|passport|account\/login/i.test(String(location ?? ''))
+}
+
+/**
+ * 从 webapi v2 的 JSON 里抠出词表。
+ *
+ * 有道没公开契约，字段名随版本漂：可能 `data` 是数组，也可能包一层
+ * `list/words/wordList`。词头可能叫 word/head/wordHead/content。
+ * 这里全部兼容，抠不出来就算空页（上层据此判「这端点不可用」）。
+ *
+ * @returns {Array<{ head: string, gloss: string }>}
+ */
+export function apiWordContainer(json) {
+  const data = json?.data ?? json
+  if (Array.isArray(data)) return data
+  for (const key of ['list', 'words', 'wordList', 'data']) {
+    if (Array.isArray(data?.[key])) return data[key]
+  }
+  return null
+}
+
+export function extractWordsFromApi(json) {
+  const list = apiWordContainer(json) ?? []
+  const out = []
+  for (const item of list) {
+    const rawHead = typeof item === 'string'
+      ? item
+      : (item?.word ?? item?.head ?? item?.wordHead ?? item?.content ?? item?.name ?? item?.wordName ?? '')
+    const head = String(rawHead ?? '').trim()
+    if (head === '') continue
+    const rawGloss = typeof item === 'string'
+      ? ''
+      : (item?.trans ?? item?.translation ?? item?.definition ?? item?.explain ?? item?.paraphrase ?? '')
+    const gloss = Array.isArray(rawGloss)
+      ? rawGloss.map((x) => String(x ?? '').trim()).filter(Boolean).join('; ')
+      : String(rawGloss ?? '').trim()
+    out.push({ head, gloss: gloss.slice(0, 300) })
+  }
+  return out
+}
+
+/** 从旧版 HTML 里抠词头：`<td class="word">…</td>` 与 `data-word="…"`。 */
+export function extractWordsFromHtml(html) {
+  const out = []
+  const text = String(html ?? '')
+  const tdRe = /<td[^>]*class\s*=\s*["'][^"']*\bword\b[^"']*["'][^>]*>([\s\S]*?)<\/td>/gi
+  let hit
+  while ((hit = tdRe.exec(text)) !== null) {
+    const head = decodeEntities(hit[1].replace(/<[^>]*>/g, ' ')).trim()
+    if (head !== '') out.push({ head, gloss: '' })
+  }
+  if (out.length > 0) return out
+  const dataRe = /data-word\s*=\s*["']([^"']{1,64})["']/gi
+  while ((hit = dataRe.exec(text)) !== null) {
+    const head = decodeEntities(hit[1]).trim()
+    if (head !== '') out.push({ head, gloss: '' })
+  }
+  return out
+}
+
+/** 极简实体解码，够 HTML 词表用。 */
+function decodeEntities(text) {
+  return String(text)
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+}
+
+/** 解析 JSON，失败返回 null。 */
+function tryParseJson(text) {
+  try {
+    return JSON.parse(String(text ?? ''))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 验证 Cookie。
+ *
+ * 顺序：accountinfo（便宜，直接区分 2035 NO_LOGIN）→ webapi v2 第一页。
+ * 两个都判断不了（端点挂了/网络错），按「无效」返回，让用户重新复制。
+ *
+ * @returns {Promise<{ valid: boolean, nickname: string, reason: string }>}
+ */
+export async function verifyYoudaoCookie(fetchImpl, cookie) {
+  if (typeof cookie !== 'string' || cookie.trim() === '') {
+    return { valid: false, nickname: '', reason: 'empty' }
+  }
+
+  // 1) accountinfo
+  try {
+    const res = await youdaoGet(fetchImpl, YOUDAO_ACCOUNT_URL, cookie)
+    if (looksLikeLoginRedirect(res.status, res.location)) {
+      return { valid: false, nickname: '', reason: 'redirect-login' }
+    }
+    const json = tryParseJson(res.text)
+    if (json && typeof json === 'object') {
+      const code = Number(json.code)
+      const msg = String(json.msg ?? '')
+      if (code === 2035 || code === 401 || /NO_LOGIN|未登录/i.test(msg)) {
+        return { valid: false, nickname: '', reason: 'no-login' }
+      }
+      if (code === 0 || code === 200 || json.data) {
+        const data = json.data ?? {}
+        const nickname = String(
+          data.nickname ?? data.userName ?? data.username ?? data.user_name ?? data.name ?? '',
+        ).trim()
+        return { valid: true, nickname, reason: 'accountinfo' }
+      }
+    }
+  } catch { /* 端点不可用就往下试 webapi，别把网络错当「Cookie 无效」 */ }
+
+  // 2) webapi v2 第一页
+  try {
+    const res = await youdaoGet(fetchImpl, youdaoApiUrl(0, 1), cookie)
+    if (looksLikeLoginRedirect(res.status, res.location)) {
+      return { valid: false, nickname: '', reason: 'redirect-login' }
+    }
+    const json = tryParseJson(res.text)
+    if (json && typeof json === 'object') {
+      const code = Number(json.code)
+      const msg = String(json.msg ?? '')
+      if (code === 401 || code === 2035 || /未登录|NO_LOGIN/i.test(msg)) {
+        return { valid: false, nickname: '', reason: 'no-login' }
+      }
+      if (code === 0 || Array.isArray(json.data) || json.data) {
+        return { valid: true, nickname: '', reason: 'webapi' }
+      }
+    }
+  } catch { /* 落到下面统一按无效处理 */ }
+
+  return { valid: false, nickname: '', reason: 'unknown' }
+}
+
+/**
+ * 抓完整收藏夹。按设计顺序试端点：webapi v2 → 旧版 HTML → accountinfo 兜底判定。
+ *
+ * 限速每页 ≥400ms、单页 ≤100、总页 ≤200、超时 15s。
+ * 401/302 登录页 → E_YOUDAO_AUTH；两个端点都抠不出词 → E_YOUDAO_ENDPOINT
+ * （带 fallback:'manual'，前端据此显示「手动导入」引导，不许静默失败）。
+ *
+ * @returns {Promise<{ words: Array<{head: string, gloss: string}>, endpoint: string, pages: number }>}
+ */
+export async function fetchYoudaoSaved(fetchImpl, cookie, options = {}) {
+  if (typeof cookie !== 'string' || cookie.trim() === '') {
+    throw youdaoError('E_YOUDAO_AUTH', '还没保存有道 Cookie，请先复制并保存')
+  }
+  const gap = Number.isFinite(options.gapMs) ? options.gapMs : YOUDAO_PAGE_GAP_MS
+  const limit = Math.min(
+    Number.isFinite(options.limit) ? options.limit : YOUDAO_PAGE_LIMIT,
+    YOUDAO_PAGE_LIMIT,
+  )
+  const maxPages = Math.min(
+    Number.isFinite(options.maxPages) ? options.maxPages : YOUDAO_MAX_PAGES,
+    YOUDAO_MAX_PAGES,
+  )
+
+  /** @type {Map<string, { head: string, gloss: string }>} 小写词头 → 原词头与释义，天然去重 */
+  const collected = new Map()
+
+  // ── 端点 1：webapi v2 ──
+  let lastAt = 0
+  /** false = 端点数形态不认识（该试 HTML 降级） */
+  let apiUsable = true
+  /** true = 端点数形态认识，只是这本真没词（不是改版，别误报） */
+  let apiShapeOk = false
+  for (let page = 0; page < maxPages; page += 1) {
+    const offset = page * limit
+    const wait = lastAt === 0 ? 0 : gap - (Date.now() - lastAt)
+    if (wait > 0) await sleep(wait)
+    lastAt = Date.now()
+
+    const res = await youdaoGet(fetchImpl, youdaoApiUrl(offset, limit), cookie)
+    if (looksLikeLoginRedirect(res.status, res.location)) {
+      throw youdaoError('E_YOUDAO_AUTH', 'Cookie 已失效，请重新复制')
+    }
+    const json = tryParseJson(res.text)
+    if (!json || typeof json !== 'object') { apiUsable = false; break }
+    const code = Number(json.code)
+    const msg = String(json.msg ?? '')
+    if (code === 401 || code === 2035 || /未登录|NO_LOGIN/i.test(msg)) {
+      throw youdaoError('E_YOUDAO_AUTH', 'Cookie 已失效，请重新复制')
+    }
+    if (code !== 0 && code !== 200) { apiUsable = false; break }
+
+    // 先把「形态认识」和「有没有词」分开：空数组是合法结果，null 才是改版
+    const container = apiWordContainer(json)
+    if (container === null) { apiUsable = false; break }
+    apiShapeOk = true
+
+    const batch = extractWordsFromApi(json)
+    if (batch.length === 0) break
+    for (const item of batch) {
+      const key = item.head.toLowerCase()
+      if (!collected.has(key)) collected.set(key, { head: item.head, gloss: item.gloss })
+    }
+    if (batch.length < limit) break
+    const total = Number(json?.data?.total ?? json?.total ?? NaN)
+    if (Number.isFinite(total) && offset + batch.length >= total) break
+  }
+
+  if (collected.size > 0) {
+    return {
+      words: [...collected.values()],
+      endpoint: 'webapi',
+      pages: Math.ceil(collected.size / limit),
+    }
+  }
+
+  // ── 端点 2：旧版 HTML 词表页 ──
+  let htmlPages = 0
+  if (apiUsable === false) {
+    const perPage = 15
+    for (let page = 1; page <= maxPages; page += 1) {
+      const wait = lastAt === 0 ? 0 : gap - (Date.now() - lastAt)
+      if (wait > 0) await sleep(wait)
+      lastAt = Date.now()
+
+      const res = await youdaoGet(fetchImpl, youdaoHtmlUrl(page, perPage), cookie)
+      if (looksLikeLoginRedirect(res.status, res.location)) {
+        throw youdaoError('E_YOUDAO_AUTH', 'Cookie 已失效，请重新复制')
+      }
+      const batch = extractWordsFromHtml(res.text)
+      if (batch.length === 0) break
+      htmlPages += 1
+      for (const item of batch) {
+        const key = item.head.toLowerCase()
+        if (!collected.has(key)) collected.set(key, { head: item.head, gloss: item.gloss })
+      }
+      if (batch.length < perPage) break
+    }
+  }
+
+  if (collected.size > 0) {
+    return {
+      words: [...collected.values()],
+      endpoint: 'html',
+      pages: htmlPages,
+    }
+  }
+
+  // ── 端点 3：身份兜底判定 ──
+  const identity = await verifyYoudaoCookie(fetchImpl, cookie)
+  if (!identity.valid) {
+    throw youdaoError('E_YOUDAO_AUTH', 'Cookie 已失效，请重新复制')
+  }
+  // 身份有效 + 端点数形态认识 + 就是没词：如实返回空表（收藏夹真的空）。
+  // 这不是「静默失败」—— 失败一定报错；这是成功但零结果。
+  if (apiShapeOk) {
+    return { words: [], endpoint: 'webapi', pages: 0 }
+  }
+  throw youdaoError(
+    'E_YOUDAO_ENDPOINT',
+    '有道生词本接口改版了，抓不到词表。请改用「手动导入」：在有道生词本页全选复制，粘贴到「导入」页签',
+    { fallback: 'manual' },
+  )
+}
+
 /** 读 meta.json 里的词条数，用于 health。读不到就返回 undefined，不要抛。 */
 function readMeta(assets) {
   try {
@@ -673,13 +1326,19 @@ function readMeta(assets) {
   }
 }
 
-/** 统一失败响应。形状固定，客户端只认这个。 */
-function sendError(res, status, code, message, headOnly) {
+/**
+ * 统一失败响应。形状固定 `{ok:false,error:{code,message}}`，客户端只认这个。
+ *
+ * `extra` 用来在有道降级时多带一个字段（如 `fallback:'manual'`），
+ * 合并进 `error` 而不是外层，免得破坏固定形状。
+ */
+function sendError(res, status, code, message, headOnly, extra) {
   res.statusCode = status
   res.setHeader('content-type', 'application/json; charset=utf-8')
   res.setHeader('cache-control', 'no-store')
   res.setHeader('x-content-type-options', 'nosniff')
-  const payload = Buffer.from(JSON.stringify({ ok: false, error: { code, message } }))
+  const body = extra === undefined ? { code, message } : { code, message, ...extra }
+  const payload = Buffer.from(JSON.stringify({ ok: false, error: body }))
   res.setHeader('content-length', String(payload.length))
   if (headOnly) res.end()
   else res.end(payload)

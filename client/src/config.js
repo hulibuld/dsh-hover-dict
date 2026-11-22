@@ -54,7 +54,49 @@ export const DEFAULT_TIMING = {
  * @property {number} viewportMarginPx    贴边时的最小留白
  * @property {boolean} showTags           是否显示考纲标签
  * @property {string[]} tagOrder          标签展示顺序，靠前的优先
+ * @property {boolean} markWords          生词着色总开关：false = 完全不变色（设计-v2 §C4）
+ * @property {string} markColor           高亮色，hex。唯一的非 token 颜色例外
+ * @property {boolean} markKnown          已掌握的词是否淡色显示
+ * @property {string} markStyle           'underline' | 'background' | 'text'
  */
+
+/**
+ * 「跟随宿主错误红」的哨兵值。
+ *
+ * 用户要求生词着色默认用 DSH 自带的错误红（就是工具调用报错那种红），
+ * 这样亮/暗主题各自取对应的错误红，不必我们挑一个 hex 然后两个主题都不像。
+ * 用哨兵而不是把 token 表达式存进配置：配置里存语义标记，具体 CSS 由渲染层
+ * 拼出来（见 marker.js 的 markColorToCss，那里带 hex 兜底），换主题不用改存档。
+ */
+export const THEME_ERROR_COLOR = 'theme-error'
+
+/**
+ * 默认高亮色（红）。
+ *
+ * v2 起默认「跟随宿主错误红」而不是固定 hex —— 用户原话是「和宿主报错红字一样的红」。
+ * 用户仍可改成固定 hex（六预设或自定义）。
+ */
+export const DEFAULT_MARK_COLOR = THEME_ERROR_COLOR
+
+/**
+ * 合法的着色样式。
+ *
+ * @deprecated 用户裁定「只要改字的颜色即可」——不着色块、不下划线，
+ * 所以这三档（underline/background/text）已废弃，渲染层不再使用。
+ * 保留导出只为不让旧存档/旧调用点直接炸；正式清理留给后续版本。
+ */
+export const MARK_STYLES = ['underline', 'background', 'text']
+
+/** 设置面板给的六个预设色块（红/橙/黄/绿/蓝/紫），第一项是固定红。 */
+export const MARK_COLOR_PRESETS = ['#e5484d', '#f0a441', '#d4b106', '#2f9e44', '#4d6bfe', '#8b5cf6']
+
+/** 默认的着色配置。 */
+const DEFAULT_MARK = {
+  markWords: true,
+  markColor: DEFAULT_MARK_COLOR,
+  markKnown: false,
+  markStyle: 'underline',
+}
 
 /** @type {UxAppearance} */
 export const DEFAULT_APPEARANCE = {
@@ -65,6 +107,7 @@ export const DEFAULT_APPEARANCE = {
   viewportMarginPx: 8,
   showTags: true,
   tagOrder: ['cet4', 'cet6', 'ky', 'ielts'],
+  ...DEFAULT_MARK,
 }
 
 /**
@@ -209,6 +252,24 @@ export function clampTiming(input) {
 }
 
 /**
+ * 校验一个高亮色。只认 6 位 hex（`<input type=color>` 的输出形状）。
+ *
+ * 为什么要校验：这个值会被拼进 CSS 的 `color-mix()`，坏值会让整条声明作废
+ * （参见 _tokens.mjs 那次的教训），所以宁可回落到默认红，也不要把垃圾传下去。
+ *
+ * @param {unknown} value
+ * @returns {string} 合法 hex 或默认红
+ */
+export function normalizeMarkColor(value) {
+  if (typeof value !== 'string') return DEFAULT_MARK_COLOR
+  const trimmed = value.trim()
+  // 合法输入 = 六位 hex 或 theme-error 哨兵；其余一律回落默认（=哨兵）
+  if (/^#[0-9a-f]{6}$/i.test(trimmed)) return trimmed.toLowerCase()
+  if (trimmed.toLowerCase() === THEME_ERROR_COLOR) return THEME_ERROR_COLOR
+  return DEFAULT_MARK_COLOR
+}
+
+/**
  * 把外观参数夹到安全区间。
  *
  * 边界：
@@ -218,6 +279,10 @@ export function clampTiming(input) {
  *   offsetPx             0 – 32
  *   viewportMarginPx     0 – 48
  *   tagOrder             只保留已知标签，去重，最多 8 个
+ *   markWords            布尔，非布尔回落 true
+ *   markColor            `/^#[0-9a-f]{6}$/i`，非法回落默认红 `#e5484d`
+ *   markKnown            布尔，非布尔回落 false
+ *   markStyle            MARK_STYLES 之一，枚举外回落 'underline'
  *
  * @param {Partial<UxAppearance>} input
  * @returns {UxAppearance}
@@ -239,6 +304,10 @@ export function clampAppearance(input) {
     viewportMarginPx: pick('viewportMarginPx'),
     showTags: typeof source.showTags === 'boolean' ? source.showTags : DEFAULT_APPEARANCE.showTags,
     tagOrder: DEFAULT_APPEARANCE.tagOrder.slice(),
+    markWords: typeof source.markWords === 'boolean' ? source.markWords : DEFAULT_APPEARANCE.markWords,
+    markColor: normalizeMarkColor(source.markColor),
+    markKnown: typeof source.markKnown === 'boolean' ? source.markKnown : DEFAULT_APPEARANCE.markKnown,
+    markStyle: MARK_STYLES.includes(source.markStyle) ? source.markStyle : DEFAULT_APPEARANCE.markStyle,
   }
 
   if (Array.isArray(source.tagOrder)) {

@@ -9,7 +9,11 @@
  *   client/src/net.js
  *   client/src/dict.js
  *   client/src/family.js
+ *   client/src/srs.js
  *   client/src/wordbook.js
+ *   client/src/importer.js
+ *   client/src/review.js
+ *   client/src/marker.js
  *   client/src/anchor.js
  *   client/src/position.js
  *   client/src/overlay.js
@@ -105,7 +109,49 @@ window.__ModuleLoader__.load({
  * @property {number} viewportMarginPx    贴边时的最小留白
  * @property {boolean} showTags           是否显示考纲标签
  * @property {string[]} tagOrder          标签展示顺序，靠前的优先
+ * @property {boolean} markWords          生词着色总开关：false = 完全不变色（设计-v2 §C4）
+ * @property {string} markColor           高亮色，hex。唯一的非 token 颜色例外
+ * @property {boolean} markKnown          已掌握的词是否淡色显示
+ * @property {string} markStyle           'underline' | 'background' | 'text'
  */
+
+/**
+ * 「跟随宿主错误红」的哨兵值。
+ *
+ * 用户要求生词着色默认用 DSH 自带的错误红（就是工具调用报错那种红），
+ * 这样亮/暗主题各自取对应的错误红，不必我们挑一个 hex 然后两个主题都不像。
+ * 用哨兵而不是把 token 表达式存进配置：配置里存语义标记，具体 CSS 由渲染层
+ * 拼出来（见 marker.js 的 markColorToCss，那里带 hex 兜底），换主题不用改存档。
+ */
+    const THEME_ERROR_COLOR = 'theme-error'
+
+/**
+ * 默认高亮色（红）。
+ *
+ * v2 起默认「跟随宿主错误红」而不是固定 hex —— 用户原话是「和宿主报错红字一样的红」。
+ * 用户仍可改成固定 hex（六预设或自定义）。
+ */
+    const DEFAULT_MARK_COLOR = THEME_ERROR_COLOR
+
+/**
+ * 合法的着色样式。
+ *
+ * @deprecated 用户裁定「只要改字的颜色即可」——不着色块、不下划线，
+ * 所以这三档（underline/background/text）已废弃，渲染层不再使用。
+ * 保留导出只为不让旧存档/旧调用点直接炸；正式清理留给后续版本。
+ */
+    const MARK_STYLES = ['underline', 'background', 'text']
+
+/** 设置面板给的六个预设色块（红/橙/黄/绿/蓝/紫），第一项是固定红。 */
+    const MARK_COLOR_PRESETS = ['#e5484d', '#f0a441', '#d4b106', '#2f9e44', '#4d6bfe', '#8b5cf6']
+
+/** 默认的着色配置。 */
+    const DEFAULT_MARK = {
+      markWords: true,
+      markColor: DEFAULT_MARK_COLOR,
+      markKnown: false,
+      markStyle: 'underline',
+    }
 
 /** @type {UxAppearance} */
     const DEFAULT_APPEARANCE = {
@@ -116,6 +162,7 @@ window.__ModuleLoader__.load({
       viewportMarginPx: 8,
       showTags: true,
       tagOrder: ['cet4', 'cet6', 'ky', 'ielts'],
+      ...DEFAULT_MARK,
     }
 
 /**
@@ -260,6 +307,24 @@ window.__ModuleLoader__.load({
     }
 
 /**
+ * 校验一个高亮色。只认 6 位 hex（`<input type=color>` 的输出形状）。
+ *
+ * 为什么要校验：这个值会被拼进 CSS 的 `color-mix()`，坏值会让整条声明作废
+ * （参见 _tokens.mjs 那次的教训），所以宁可回落到默认红，也不要把垃圾传下去。
+ *
+ * @param {unknown} value
+ * @returns {string} 合法 hex 或默认红
+ */
+    function normalizeMarkColor(value) {
+      if (typeof value !== 'string') return DEFAULT_MARK_COLOR
+      const trimmed = value.trim()
+  // 合法输入 = 六位 hex 或 theme-error 哨兵；其余一律回落默认（=哨兵）
+      if (/^#[0-9a-f]{6}$/i.test(trimmed)) return trimmed.toLowerCase()
+      if (trimmed.toLowerCase() === THEME_ERROR_COLOR) return THEME_ERROR_COLOR
+      return DEFAULT_MARK_COLOR
+    }
+
+/**
  * 把外观参数夹到安全区间。
  *
  * 边界：
@@ -269,6 +334,10 @@ window.__ModuleLoader__.load({
  *   offsetPx             0 – 32
  *   viewportMarginPx     0 – 48
  *   tagOrder             只保留已知标签，去重，最多 8 个
+ *   markWords            布尔，非布尔回落 true
+ *   markColor            `/^#[0-9a-f]{6}$/i`，非法回落默认红 `#e5484d`
+ *   markKnown            布尔，非布尔回落 false
+ *   markStyle            MARK_STYLES 之一，枚举外回落 'underline'
  *
  * @param {Partial<UxAppearance>} input
  * @returns {UxAppearance}
@@ -290,6 +359,10 @@ window.__ModuleLoader__.load({
         viewportMarginPx: pick('viewportMarginPx'),
         showTags: typeof source.showTags === 'boolean' ? source.showTags : DEFAULT_APPEARANCE.showTags,
         tagOrder: DEFAULT_APPEARANCE.tagOrder.slice(),
+        markWords: typeof source.markWords === 'boolean' ? source.markWords : DEFAULT_APPEARANCE.markWords,
+        markColor: normalizeMarkColor(source.markColor),
+        markKnown: typeof source.markKnown === 'boolean' ? source.markKnown : DEFAULT_APPEARANCE.markKnown,
+        markStyle: MARK_STYLES.includes(source.markStyle) ? source.markStyle : DEFAULT_APPEARANCE.markStyle,
       }
 
       if (Array.isArray(source.tagOrder)) {
@@ -319,7 +392,7 @@ window.__ModuleLoader__.load({
       return table[tag] ?? tag
     }
 
-      return { DEFAULT_TIMING, DEFAULT_APPEARANCE, DEFAULT_UX, STORAGE_KEY, loadUx, saveUx, clampTiming, clampAppearance, tagLabel }
+      return { DEFAULT_TIMING, THEME_ERROR_COLOR, DEFAULT_MARK_COLOR, MARK_STYLES, MARK_COLOR_PRESETS, DEFAULT_APPEARANCE, DEFAULT_UX, STORAGE_KEY, loadUx, saveUx, clampTiming, normalizeMarkColor, clampAppearance, tagLabel }
     })()
 
     // ═══ word.js ═══
@@ -1724,9 +1797,140 @@ window.__ModuleLoader__.load({
       return { inflectionsOf, stemVariants, familyOf }
     })()
 
+    // ═══ srs.js ═══
+    var __mod_srs = (function () {
+/**
+ * srs.js —— 生词本的间隔重复（SRS）纯函数层。
+ *
+ * 只做数学：不碰存储、不碰 DOM、不碰 React。给定输入必有输出，node 可以直测。
+ * 算法是简化 SM-2，单位天（设计-v2 §A3）：
+ *
+ *   again（不认识）→ 10 分钟后再来，ease -0.2，连对清零，状态转 unknown
+ *   hard （记错）  → 间隔减半（至少 1 天），ease -0.15，状态转 fuzzy
+ *   good （认识）  → 1 / 3 / interval*ease 天，ease +0.02
+ *
+ * 夹取：ease ∈ [1.3, 3.0]，interval ≤ 365 天。
+ * 「已掌握」的判据是间隔跨过 21 天（known），不是答对次数 —— 因为答对一次就
+ * 叫「掌握」会让 known 这个词失去意义。
+ */
+
+/** 一天多少毫秒。复习间隔与 stats 的日界都按它算。 */
+    const DAY_MS = 86400000
+
+/** ease 的下限与上限。 */
+    const EASE_MIN = 1.3
+    const EASE_MAX = 3.0
+
+/** 单次间隔的天数上限。 */
+    const INTERVAL_MAX = 365
+
+/** 「不认识」之后多少毫秒重来。 */
+    const AGAIN_DELAY_MS = 10 * 60000
+
+/** 间隔跨过这个天数才算「已掌握」。 */
+    const KNOWN_INTERVAL = 21
+
+/** 合法的评分。 */
+    const SRS_GRADES = ['again', 'hard', 'good']
+
+/** 合法的词条状态：new 未学、unknown 不认识、fuzzy 记错、known 已掌握。 */
+    const WORD_STATES = ['new', 'unknown', 'fuzzy', 'known']
+
+/**
+ * 一份全新的 srs 记录。
+ *
+ * @returns {{ due: number, interval: number, ease: number, reps: number, lapses: number, lastReviewAt: number }}
+ */
+    function defaultSrs() {
+      return { due: 0, interval: 0, ease: 2.5, reps: 0, lapses: 0, lastReviewAt: 0 }
+    }
+
+/** 把任意值读成有限数字，坏值给兜底。 */
+    const num = (value, fallback) => (Number.isFinite(value) ? value : fallback)
+
+/**
+ * 把磁盘上读到的 srs 记录夹进合法范围。
+ *
+ * 老数据可能缺字段、也可能被人手改过（ease 写成 0 会让间隔永远为 1），
+ * 所以读入时一律过一遍这里，而不是在算法里到处判空。
+ *
+ * @param {object} [raw]
+ * @returns {{ due: number, interval: number, ease: number, reps: number, lapses: number, lastReviewAt: number }}
+ */
+    function normalizeSrs(raw) {
+      const src = raw && typeof raw === 'object' ? raw : {}
+      return {
+        due: Math.max(0, num(src.due, 0)),
+        interval: Math.min(INTERVAL_MAX, Math.max(0, num(src.interval, 0))),
+        ease: Math.min(EASE_MAX, Math.max(EASE_MIN, num(src.ease, 2.5))),
+        reps: Math.max(0, num(src.reps, 0)),
+        lapses: Math.max(0, num(src.lapses, 0)),
+        lastReviewAt: Math.max(0, num(src.lastReviewAt, 0)),
+      }
+    }
+
+/**
+ * 评分一次，算出新的 srs 记录。
+ *
+ * 不改传入对象（纯函数），返回全新的记录。
+ *
+ * @param {object} srs 旧记录，缺字段按默认值算
+ * @param {'again'|'hard'|'good'} grade 评分
+ * @param {number} [now] 当前时间戳（测试用；默认 now）
+ * @returns {{ due: number, interval: number, ease: number, reps: number, lapses: number, lastReviewAt: number }}
+ */
+    function nextSrs(srs, grade, now = Date.now()) {
+      const base = normalizeSrs(srs)
+      const at = Number.isFinite(now) ? now : Date.now()
+      let { interval, ease, reps, lapses } = base
+
+      if (grade === 'again') {
+        reps = 0
+        lapses += 1
+        interval = 0
+        ease = Math.max(EASE_MIN, ease - 0.2)
+        return { due: at + AGAIN_DELAY_MS, interval, ease, reps, lapses, lastReviewAt: at }
+      }
+
+      if (grade === 'hard') {
+        reps = 0
+        lapses += 1
+        interval = Math.max(1, Math.round(interval * 0.5))
+        ease = Math.max(EASE_MIN, ease - 0.15)
+        return { due: at + interval * DAY_MS, interval, ease, reps, lapses, lastReviewAt: at }
+      }
+
+  // good（未知评分按 good 处理：宁可多给一次机会，也不要卡死队列）
+      reps += 1
+      interval = reps === 1 ? 1 : reps === 2 ? 3 : Math.round(interval * ease)
+      interval = Math.min(interval, INTERVAL_MAX)
+      ease = Math.min(EASE_MAX, ease + 0.02)
+      return { due: at + interval * DAY_MS, interval, ease, reps, lapses, lastReviewAt: at }
+    }
+
+/**
+ * 评分之后词条该显示成什么状态。
+ *
+ * @param {'new'|'unknown'|'fuzzy'|'known'} prevState
+ * @param {'again'|'hard'|'good'} grade
+ * @param {number} newInterval 评分后的间隔（天）
+ * @returns {'new'|'unknown'|'fuzzy'|'known'}
+ */
+    function stateAfterGrade(prevState, grade, newInterval) {
+      const prev = WORD_STATES.includes(prevState) ? prevState : 'new'
+      if (grade === 'again') return 'unknown'
+      if (grade === 'hard') return 'fuzzy'
+      const interval = Number.isFinite(newInterval) ? newInterval : 0
+      if (interval >= KNOWN_INTERVAL) return 'known'
+      return prev === 'new' ? 'fuzzy' : prev
+    }
+      return { DAY_MS, EASE_MIN, EASE_MAX, INTERVAL_MAX, AGAIN_DELAY_MS, KNOWN_INTERVAL, SRS_GRADES, WORD_STATES, defaultSrs, normalizeSrs, nextSrs, stateAfterGrade }
+    })()
+
     // ═══ wordbook.js ═══
     var __mod_wordbook = (function () {
       var { normalizeKey } = __mod_word
+      var { defaultSrs, normalizeSrs, nextSrs, stateAfterGrade, WORD_STATES, DAY_MS } = __mod_srs
 /**
  * wordbook.js —— 生词本的数据层。
  *
@@ -1736,37 +1940,111 @@ window.__ModuleLoader__.load({
  *
  * 为什么先试宿主：生词本是用户长期积累的东西，丢了比不能存更糟。
  *
- * 词条形状（存进 KV 的就是这个）：
+ * 存储单元（KV）：`name:'dsh-hover-dict'`，version 2，三张表：
+ *   words —— 词条，以词头为主键；
+ *   books —— 词书，以词书 id 为主键；
+ *   log   —— 复习记录环形缓冲（一条记录，键 `recent`）。
+ * 表名与单元名一个都不能改：改了等于让老用户丢生词（设计-v2 §A1）。
+ *
+ * 词条形状 v2：
  *   {
- *     head: 'cute',         词头（小写）
+ *     v: 2,
+ *     head: 'cute',           词头（normalizeKey 之后，小写）
  *     addedAt: 1698800000000,
- *     source: 'dsh' | 'youdao' | 'manual',
- *     note: '',
- *     review: { seen: 3, lastSeenAt: 1698800000000 }
+ *     source: 'dsh' | 'youdao' | 'manual' | 'import',
+ *     bookId: 'default',      首次归属的词书
+ *     alsoIn: ['cet4'],       被重复导入到别的书时追加（可选字段）
+ *     note: '',               用户备注，≤500 字符
+ *     gloss: '',              释义快照（导入行自带 / 有道抓回）；词库能查到的词留空
+ *     state: 'new'|'unknown'|'fuzzy'|'known',
+ *     srs: { due, interval, ease, reps, lapses, lastReviewAt },
+ *     review: { seen, lastSeenAt }   保留 v1 字段：查词次数
  *   }
  *
- * 只存词头不存释义 —— 释义在离线词库里，存两份会不一致。
+ * 只存词头不存完整释义 —— 释义在离线词库里，存两份会不一致。
  */
 
 
-/** KV 表名与单元名。改这两个值等于让老用户丢生词，别动。 */
+/** KV 表名与单元名。改这几个值等于让老用户丢生词，别动。 */
     const UNIT_NAME = 'dsh-hover-dict'
-    const UNIT_VERSION = 1
+    const UNIT_VERSION = 2
+    const LEGACY_VERSION = 1
     const TABLE = 'words'
+    const BOOK_TABLE = 'books'
+    const LOG_TABLE = 'log'
+    const LOG_KEY = 'recent'
 
-/** localStorage 的兜底键。 */
+/** localStorage 的兜底键。词表那个键必须保持原样。 */
     const FALLBACK_KEY = 'dsh-hover-dict:wordbook'
+    const BOOKS_KEY = 'dsh-hover-dict:books'
+    const LOG_KEY_LOCAL = 'dsh-hover-dict:log'
+
+/** 内置词书：不可删、不可改名，划词收藏一律进它。 */
+    const DEFAULT_BOOK_ID = 'default'
+    const DEFAULT_BOOK_NAME = '默认生词本'
+
+/** 复习日志环形缓冲上限。 */
+    const LOG_CAP = 500
+
+/** 备注上限。 */
+    const NOTE_MAX = 500
+/** 释义快照上限。 */
+    const GLOSS_MAX = 200
+/** 词书名字上限。 */
+    const BOOK_NAME_MAX = 40
+
+/** 造一条全新的词条。 */
+    const makeEntry = (head, source, bookId) => ({
+      v: 2,
+      head,
+      addedAt: Date.now(),
+      source: typeof source === 'string' && source !== '' ? source : 'dsh',
+      bookId: typeof bookId === 'string' && bookId !== '' ? bookId : DEFAULT_BOOK_ID,
+      note: '',
+      gloss: '',
+      state: 'new',
+      srs: defaultSrs(),
+      review: { seen: 0, lastSeenAt: 0 },
+    })
+
+/** 造内置词书。 */
+    const makeDefaultBook = () => ({
+      id: DEFAULT_BOOK_ID,
+      name: DEFAULT_BOOK_NAME,
+      createdAt: 0,
+      builtin: true,
+    })
 
 /**
  * 生词本的内存镜像 + 落盘。
  *
  * @typedef {object} WordbookEntry
+ * @property {number} v
  * @property {string} head
  * @property {number} addedAt
  * @property {string} source
+ * @property {string} bookId
+ * @property {string[]} [alsoIn]
  * @property {string} note
+ * @property {string} gloss
+ * @property {string} state
+ * @property {object} srs
  * @property {{ seen: number, lastSeenAt: number }} review
  */
+
+/** 本地日界：把时间戳压到当天 00:00。 */
+    const startOfDay = (ts) => {
+      const d = new Date(Number.isFinite(ts) ? ts : Date.now())
+      d.setHours(0, 0, 0, 0)
+      return d.getTime()
+    }
+
+/** 本地日期键 `YYYY-MM-DD`（按用户时区，不按 UTC）。 */
+    const dayKey = (ts) => {
+      const d = new Date(Number.isFinite(ts) ? ts : Date.now())
+      const pad = (n) => String(n).padStart(2, '0')
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    }
 
 /**
  * 造一个生词本。
@@ -1774,19 +2052,6 @@ window.__ModuleLoader__.load({
  * @param {object} options
  * @param {object} [options.storage] 宿主的 storage 服务（可选）
  * @param {Storage} [options.local] localStorage（可选，两者都没有就只在内存里）
- * @returns {{
- *   ready: () => Promise<void>,
- *   has: (word: string) => boolean,
- *   get: (word: string) => WordbookEntry | undefined,
- *   add: (word: string, source?: string) => Promise<boolean>,
- *   remove: (word: string) => Promise<boolean>,
- *   toggle: (word: string) => Promise<boolean>,
- *   touch: (word: string) => Promise<void>,
- *   list: () => WordbookEntry[],
- *   importMany: (words: string[], source: string) => Promise<number>,
- *   size: () => number,
- *   subscribe: (fn: () => void) => () => void,
- * }}
  */
     function createWordbook(options) {
       const local = options?.local
@@ -1794,6 +2059,10 @@ window.__ModuleLoader__.load({
 
   /** @type {Map<string, WordbookEntry>} */
       const words = new Map()
+  /** @type {Map<string, object>} */
+      const books = new Map()
+  /** @type {Array<{at:number, head:string, grade:string}>} */
+      const log = []
       const listeners = new Set()
       let unit = null
       let readyPromise = null
@@ -1804,34 +2073,82 @@ window.__ModuleLoader__.load({
         }
       }
 
-  /** 把一条记录写进内存镜像。KV 里可能有多余字段，按形状挑。 */
+      const ensureDefaultBook = () => {
+        if (!books.has(DEFAULT_BOOK_ID)) books.set(DEFAULT_BOOK_ID, makeDefaultBook())
+      }
+
+  /**
+   * 把一条 KV 记录读进内存镜像。**老记录就地升级成 v2**（缺字段补默认）。
+   *
+   * KV 里可能有多余字段，按形状挑，不整条信任。
+   */
       const adopt = (key, value) => {
         const head = normalizeKey(key)
         if (!head) return
         const record = value && typeof value === 'object' ? value : {}
         const review = record.review && typeof record.review === 'object' ? record.review : {}
-        words.set(head, {
+        const bookId = typeof record.bookId === 'string' && record.bookId !== '' ? record.bookId : DEFAULT_BOOK_ID
+        const alsoIn = Array.isArray(record.alsoIn)
+          ? [...new Set(record.alsoIn.filter((id) => typeof id === 'string' && id !== '' && id !== bookId))]
+          : []
+        const entry = {
+          v: 2,
           head,
           addedAt: Number.isFinite(record.addedAt) ? record.addedAt : Date.now(),
-          source: typeof record.source === 'string' ? record.source : 'dsh',
-          note: typeof record.note === 'string' ? record.note : '',
+          source: typeof record.source === 'string' && record.source !== '' ? record.source : 'dsh',
+          bookId,
+          note: typeof record.note === 'string' ? record.note.slice(0, NOTE_MAX) : '',
+          gloss: typeof record.gloss === 'string' ? record.gloss.slice(0, GLOSS_MAX) : '',
+          state: WORD_STATES.includes(record.state) ? record.state : 'new',
+          srs: normalizeSrs(record.srs),
           review: {
             seen: Number.isFinite(review.seen) ? review.seen : 0,
             lastSeenAt: Number.isFinite(review.lastSeenAt) ? review.lastSeenAt : 0,
           },
+        }
+        if (alsoIn.length > 0) entry.alsoIn = alsoIn
+        words.set(head, entry)
+      }
+
+  /** 把一条词书记录读进内存镜像。 */
+      const adoptBook = (key, value) => {
+        const record = value && typeof value === 'object' ? value : {}
+        const id = typeof key === 'string' && key !== '' ? key : (typeof record.id === 'string' ? record.id : '')
+        if (id === '') return
+        if (id === DEFAULT_BOOK_ID) {
+          books.set(DEFAULT_BOOK_ID, makeDefaultBook())
+          return
+        }
+        books.set(id, {
+          id,
+          name: typeof record.name === 'string' && record.name !== '' ? record.name.slice(0, BOOK_NAME_MAX) : id,
+          createdAt: Number.isFinite(record.createdAt) ? record.createdAt : Date.now(),
+          builtin: false,
         })
       }
 
+      const adoptLog = (value) => {
+        const rows = Array.isArray(value) ? value : (Array.isArray(value?.rows) ? value.rows : [])
+        log.length = 0
+        for (const row of rows) {
+          if (!row || typeof row !== 'object') continue
+          log.push({
+            at: Number.isFinite(row.at) ? row.at : 0,
+            head: typeof row.head === 'string' ? row.head : '',
+            grade: typeof row.grade === 'string' ? row.grade : 'good',
+          })
+        }
+      }
+
   /** 打开宿主 KV。拿不到就返回 null，让上层走 localStorage。 */
-      const openUnit = async () => {
-        if (!hostStorage) return null
+      const openUnit = async (version) => {
         try {
           const kv = hostStorage.backend?.get?.('kv') ?? hostStorage.backend?.get?.('local')
           if (!kv || typeof kv.open !== 'function') return null
           return await kv.open({
             name: UNIT_NAME,
-            version: UNIT_VERSION,
-            tables: [TABLE],
+            version,
+            tables: [TABLE, BOOK_TABLE, LOG_TABLE],
             hasGlobal: false,
             layout: 'per-record',
           })
@@ -1840,15 +2157,19 @@ window.__ModuleLoader__.load({
         }
       }
 
-  /** 从 localStorage 读。读坏了当作空，不要让整本生词本打不开。 */
-      const loadLocal = () => {
+  /** 优先 v2；v2 打不开就退回 v1 的老单元（读出来照样就地升级，写回还在老单元）。 */
+      const openAnyUnit = async () => {
+        if (!hostStorage) return null
+        const v2 = await openUnit(UNIT_VERSION)
+        if (v2) return v2
+        return openUnit(LEGACY_VERSION)
+      }
+
+  /** 从 localStorage 读词表。读坏了当作空，不要让整本生词本打不开。 */
+      const loadLocalWords = () => {
         if (!local || typeof local.getItem !== 'function') return
         let raw = null
-        try {
-          raw = local.getItem(FALLBACK_KEY)
-        } catch {
-          return
-        }
+        try { raw = local.getItem(FALLBACK_KEY) } catch { return }
         if (typeof raw !== 'string' || raw === '') return
         try {
           const parsed = JSON.parse(raw)
@@ -1859,6 +2180,28 @@ window.__ModuleLoader__.load({
         } catch { /* 坏数据当作空 */ }
       }
 
+      const loadLocalBooks = () => {
+        if (!local || typeof local.getItem !== 'function') return
+        let raw = null
+        try { raw = local.getItem(BOOKS_KEY) } catch { return }
+        if (typeof raw !== 'string' || raw === '') return
+        try {
+          const parsed = JSON.parse(raw)
+          if (!Array.isArray(parsed)) return
+          for (const item of parsed) {
+            if (item && typeof item.id === 'string') adoptBook(item.id, item)
+          }
+        } catch { /* 坏数据当作空 */ }
+      }
+
+      const loadLocalLog = () => {
+        if (!local || typeof local.getItem !== 'function') return
+        let raw = null
+        try { raw = local.getItem(LOG_KEY_LOCAL) } catch { return }
+        if (typeof raw !== 'string' || raw === '') return
+        try { adoptLog(JSON.parse(raw)) } catch { /* 坏数据当作空 */ }
+      }
+
       const saveLocal = () => {
         if (!local || typeof local.setItem !== 'function') return
         try {
@@ -1866,7 +2209,21 @@ window.__ModuleLoader__.load({
         } catch { /* 配额满就放弃，内存里还有 */ }
       }
 
-  /** 写一条到 KV。失败不抛 —— 内存镜像已经更新，界面不该因为写盘失败而报错。 */
+      const saveLocalBooks = () => {
+        if (!local || typeof local.setItem !== 'function') return
+        try {
+          local.setItem(BOOKS_KEY, JSON.stringify([...books.values()]))
+        } catch { /* ignore */ }
+      }
+
+      const saveLocalLog = () => {
+        if (!local || typeof local.setItem !== 'function') return
+        try {
+          local.setItem(LOG_KEY_LOCAL, JSON.stringify(log))
+        } catch { /* ignore */ }
+      }
+
+  /** 写一条词到 KV。失败不抛 —— 内存镜像已经更新，界面不该因为写盘失败而报错。 */
       const persist = async (head) => {
         const entry = words.get(head)
         if (!unit || !entry) return
@@ -1882,11 +2239,50 @@ window.__ModuleLoader__.load({
         } catch { /* ignore */ }
       }
 
+      const persistBook = async (id) => {
+        const book = books.get(id)
+        if (!unit || !book) return
+        try {
+          await unit.putRecord(BOOK_TABLE, id, book)
+        } catch { /* ignore */ }
+      }
+
+      const dropPersistBook = async (id) => {
+        if (!unit) return
+        try {
+          await unit.deleteRecord(BOOK_TABLE, id)
+        } catch { /* ignore */ }
+      }
+
+  /** 追加一条复习记录（环形，超上限丢最老的）。 */
+      const appendLog = (row) => {
+        log.push(row)
+        while (log.length > LOG_CAP) log.shift()
+        if (!unit) return
+        try {
+          const written = unit.putRecord(LOG_TABLE, LOG_KEY, log)
+          if (written && typeof written.catch === 'function') written.catch(() => {})
+        } catch { /* ignore */ }
+      }
+
+  /** 词书里取一个合法的书 id。 */
+      const resolveBookId = (id) => {
+        if (typeof id === 'string' && id !== '' && books.has(id)) return id
+        return DEFAULT_BOOK_ID
+      }
+
+  /** 从 Map / 普通对象里取释义快照。 */
+      const glossOf = (glosses, head) => {
+        if (!glosses) return ''
+        const raw = typeof glosses.get === 'function' ? glosses.get(head) : glosses[head]
+        return typeof raw === 'string' ? raw.slice(0, GLOSS_MAX) : ''
+      }
+
       return {
         async ready() {
           if (readyPromise) return readyPromise
           readyPromise = (async () => {
-            unit = await openUnit()
+            unit = await openAnyUnit()
             if (unit) {
               try {
                 const loaded = await unit.loadAll()
@@ -1894,12 +2290,32 @@ window.__ModuleLoader__.load({
                 if (rows && typeof rows === 'object') {
                   for (const [key, value] of Object.entries(rows)) adopt(key, value)
                 }
+                const bookRows = loaded?.tables?.[BOOK_TABLE]
+                if (bookRows && typeof bookRows === 'object') {
+                  for (const [key, value] of Object.entries(bookRows)) adoptBook(key, value)
+                }
+                const logRows = loaded?.tables?.[LOG_TABLE]
+                if (logRows && typeof logRows === 'object') adoptLog(logRows[LOG_KEY])
               } catch {
             // KV 读失败：退到 localStorage，至少还有一份
-                loadLocal()
+                loadLocalWords()
+                loadLocalBooks()
+                loadLocalLog()
               }
             } else {
-              loadLocal()
+              loadLocalWords()
+              loadLocalBooks()
+              loadLocalLog()
+            }
+
+            ensureDefaultBook()
+        // 词条引用了不存在的书（用户删过 / 手工改过备份）：补一本占位书，别让词消失
+            for (const entry of words.values()) {
+              const refs = [entry.bookId, ...(entry.alsoIn ?? [])]
+              for (const id of refs) {
+                if (id === '' || books.has(id)) continue
+                books.set(id, { id, name: id, createdAt: Date.now(), builtin: false })
+              }
             }
             emit()
           })()
@@ -1916,17 +2332,12 @@ window.__ModuleLoader__.load({
           return head === '' ? undefined : words.get(head)
         },
 
-        async add(word, source = 'dsh') {
+        async add(word, source = 'dsh', bookId = DEFAULT_BOOK_ID) {
           const head = normalizeKey(word)
           if (!head) return false
           if (words.has(head)) return false
-          words.set(head, {
-            head,
-            addedAt: Date.now(),
-            source,
-            note: '',
-            review: { seen: 0, lastSeenAt: 0 },
-          })
+          const target = resolveBookId(bookId)
+          words.set(head, makeEntry(head, source, target))
           await persist(head)
           saveLocal()
           emit()
@@ -1954,7 +2365,7 @@ window.__ModuleLoader__.load({
           return true
         },
 
-    /** 记录「这个词又被用户查了一次」。用于将来的复习排序。 */
+    /** 记录「这个词又被用户查了一次」。用于 E 块的查词记录与排序。 */
         async touch(word) {
           const head = normalizeKey(word)
           const entry = head === '' ? undefined : words.get(head)
@@ -1974,36 +2385,342 @@ window.__ModuleLoader__.load({
         },
 
     /**
-     * 批量导入。用于从有道等平台导入生词表。
+     * 评分一个词（走 srs.js），更新 state + srs，落盘并 emit。
      *
-     * @param {string[]} list 单词数组
-     * @param {string} source 来源标识
-     * @returns {Promise<number>} 真正新增的条数（已存在的跳过）
+     * 词不在生词本里就返回 null —— 不静默建档，写操作必须来自用户明确动作。
+     *
+     * @param {string} word
+     * @param {'again'|'hard'|'good'} grade
+     * @returns {Promise<WordbookEntry|null>}
      */
-        async importMany(list, source) {
+        async grade(word, grade) {
+          const head = normalizeKey(word)
+          const entry = head === '' ? undefined : words.get(head)
+          if (!entry) return null
+          const at = Date.now()
+          entry.srs = nextSrs(entry.srs, grade, at)
+          entry.state = stateAfterGrade(entry.state, grade, entry.srs.interval)
+          await persist(head)
+          appendLog({ at, head, grade: typeof grade === 'string' ? grade : 'good' })
+          saveLocal()
+          saveLocalLog()
+          emit()
+          return entry
+        },
+
+    /**
+     * 手动转态（管理台用）。
+     *
+     * 转 known：due 推到 30 天后（间隔也提到至少 30 天，免得下次评分把它拉回 1 天）；
+     * 其余状态：due=0，立即回队列。
+     *
+     * @param {string} word
+     * @param {'new'|'unknown'|'fuzzy'|'known'} state
+     * @returns {Promise<WordbookEntry|null>}
+     */
+        async setState(word, state) {
+          const head = normalizeKey(word)
+          const entry = head === '' ? undefined : words.get(head)
+          if (!entry || !WORD_STATES.includes(state)) return null
+          entry.state = state
+          if (state === 'known') {
+            entry.srs.due = Date.now() + 30 * DAY_MS
+            entry.srs.interval = Math.max(entry.srs.interval, 30)
+          } else {
+            entry.srs.due = 0
+          }
+          await persist(head)
+          saveLocal()
+          emit()
+          return entry
+        },
+
+    /**
+     * 写备注。
+     *
+     * @param {string} word
+     * @param {string} note
+     * @returns {Promise<WordbookEntry|null>}
+     */
+        async setNote(word, note) {
+          const head = normalizeKey(word)
+          const entry = head === '' ? undefined : words.get(head)
+          if (!entry) return null
+          entry.note = typeof note === 'string' ? note.slice(0, NOTE_MAX) : ''
+          await persist(head)
+          saveLocal()
+          emit()
+          return entry
+        },
+
+    /** 全部词书，内置书永远排第一。 */
+        listBooks() {
+          ensureDefaultBook()
+          const rest = [...books.values()]
+            .filter((book) => book.id !== DEFAULT_BOOK_ID)
+            .sort((a, b) => a.createdAt - b.createdAt)
+          return [{ ...books.get(DEFAULT_BOOK_ID) }, ...rest.map((book) => ({ ...book }))]
+        },
+
+    /**
+     * 新建词书。同名书已存在时直接返回那本（不重复造）。
+     *
+     * @param {string} name
+     * @returns {Promise<object|null>}
+     */
+        async createBook(name) {
+          const clean = typeof name === 'string' ? name.trim().slice(0, BOOK_NAME_MAX) : ''
+          if (clean === '') return null
+          ensureDefaultBook()
+          for (const book of books.values()) {
+            if (book.name === clean) return { ...book }
+          }
+          let id = `book-${Date.now().toString(36)}`
+          let n = 1
+          while (books.has(id)) {
+            n += 1
+            id = `book-${Date.now().toString(36)}-${n}`
+          }
+          const book = { id, name: clean, createdAt: Date.now(), builtin: false }
+          books.set(id, book)
+          await persistBook(id)
+          saveLocalBooks()
+          emit()
+          return { ...book }
+        },
+
+    /**
+     * 改名。内置书不可改名。
+     *
+     * @param {string} id
+     * @param {string} name
+     * @returns {Promise<boolean>}
+     */
+        async renameBook(id, name) {
+          const book = typeof id === 'string' ? books.get(id) : undefined
+          if (!book || book.builtin) return false
+          const clean = typeof name === 'string' ? name.trim().slice(0, BOOK_NAME_MAX) : ''
+          if (clean === '') return false
+          book.name = clean
+          await persistBook(id)
+          saveLocalBooks()
+          emit()
+          return true
+        },
+
+    /**
+     * 删书。书里的词不删：`bookId` 指向这本书的词改挂到它还属于的下一本书
+     * （没有就回 default），`alsoIn` 里的引用一并摘掉。内置书不可删。
+     *
+     * @param {string} id
+     * @returns {Promise<boolean>}
+     */
+        async removeBook(id) {
+          if (typeof id !== 'string' || id === DEFAULT_BOOK_ID) return false
+          const book = books.get(id)
+          if (!book) return false
+          books.delete(id)
+          const touched = []
+          for (const entry of words.values()) {
+            const refs = Array.isArray(entry.alsoIn) ? entry.alsoIn.filter((ref) => ref !== id) : []
+            const ownedHere = entry.bookId === id
+            if (!ownedHere && refs.length === (entry.alsoIn?.length ?? 0)) continue
+        // 词原来挂在被删的书上：改挂它还剩的第一本书（这本书从 alsoIn 里拿走当主归属）；
+        // 一本都不剩就回 default。
+            let rest = refs
+            if (ownedHere) {
+              const next = refs.find((ref) => books.has(ref))
+              entry.bookId = next ?? DEFAULT_BOOK_ID
+              rest = next ? refs.filter((ref) => ref !== next) : refs
+            }
+            if (rest.length > 0) entry.alsoIn = rest
+            else delete entry.alsoIn
+            touched.push(entry.head)
+          }
+          await dropPersistBook(id)
+          for (const head of touched) await persist(head)
+          saveLocal()
+          saveLocalBooks()
+          emit()
+          return true
+        },
+
+    /**
+     * 到期队列：`due <= now` 的词。
+     *
+     * 排序：state==='unknown' 优先 → due 升序 → addedAt 升序（设计-v2 §A3）。
+     *
+     * @param {number} [now]
+     * @returns {WordbookEntry[]}
+     */
+        dueQueue(now) {
+          const at = Number.isFinite(now) ? now : Date.now()
+          const rank = (entry) => (entry.state === 'unknown' ? 0 : 1)
+          return [...words.values()]
+            .filter((entry) => entry.srs.due <= at)
+            .sort((a, b) => {
+              const ra = rank(a)
+              const rb = rank(b)
+              if (ra !== rb) return ra - rb
+              if (a.srs.due !== b.srs.due) return a.srs.due - b.srs.due
+              return a.addedAt - b.addedAt
+            })
+        },
+
+    /**
+     * 统计聚合（B4 用）。
+     *
+     * @param {number} [now]
+     * @returns {{ total:number, byState:{new:number,unknown:number,fuzzy:number,known:number},
+     *   dueToday:number, addedToday:number, reviewedToday:number, streak:number,
+     *   days: Array<{date:string, added:number, reviewed:number}> }}
+     */
+        stats(now) {
+          const at = Number.isFinite(now) ? now : Date.now()
+          const todayStart = startOfDay(at)
+          const todayEnd = todayStart + DAY_MS
+          const byState = { new: 0, unknown: 0, fuzzy: 0, known: 0 }
+          let dueToday = 0
+          let addedToday = 0
+          for (const entry of words.values()) {
+            byState[entry.state] = (byState[entry.state] ?? 0) + 1
+            if (entry.srs.due < todayEnd) dueToday += 1
+            if (entry.addedAt >= todayStart) addedToday += 1
+          }
+          let reviewedToday = 0
+      /** date -> {added, reviewed} */
+          const byDay = new Map()
+          for (let i = 29; i >= 0; i -= 1) {
+            const key = dayKey(todayStart - i * DAY_MS)
+            byDay.set(key, { date: key, added: 0, reviewed: 0 })
+          }
+          for (const entry of words.values()) {
+            const bucket = byDay.get(dayKey(entry.addedAt))
+            if (bucket) bucket.added += 1
+          }
+          for (const row of log) {
+            const key = dayKey(row.at)
+            const bucket = byDay.get(key)
+            if (bucket) bucket.reviewed += 1
+            if (row.at >= todayStart) reviewedToday += 1
+          }
+      // streak：从今天往回数连续有复习记录的天数。
+      // 今天还没复习不算断 —— 那只是今天还没开始，不是断签。
+          const reviewedDays = new Set(log.map((row) => dayKey(row.at)))
+          let streak = 0
+          for (let i = 0; i < 366; i += 1) {
+            if (reviewedDays.has(dayKey(todayStart - i * DAY_MS))) {
+              streak += 1
+              continue
+            }
+            if (i === 0) continue
+            break
+          }
+          return {
+            total: words.size,
+            byState,
+            dueToday,
+            addedToday,
+            reviewedToday,
+            streak,
+            days: [...byDay.values()],
+          }
+        },
+
+    /**
+     * 批量导入。用于从有道等平台导入生词表，或导入本插件的 JSON 备份。
+     *
+     * 同一词头在不同书里是**同一条记录**（head 是主键）：已存在的词只把目标书
+     * 追加进 `alsoIn`，不新建记录。这就是「多本词书共用一套复习队列」的落法。
+     *
+     * @param {Array<string|object>} list 单词数组，或完整记录数组（备份恢复）
+     * @param {string} source 来源标识
+     * @param {{ bookId?: string, glosses?: Map<string,string>|Record<string,string> }} [opts]
+     * @returns {Promise<number>} 真正新增的条数
+     */
+        async importMany(list, source, opts) {
           if (!Array.isArray(list)) return 0
+          const target = resolveBookId(opts?.bookId)
+          const glosses = opts?.glosses
+          const src = typeof source === 'string' && source !== '' ? source : 'import'
           let added = 0
+          let touched = 0
           for (const raw of list) {
-            const head = normalizeKey(String(raw ?? ''))
-            if (!head || head.length < 1 || head.length > 64) continue
+            const asObject = raw && typeof raw === 'object' && !Array.isArray(raw)
+            const headText = asObject ? (raw.head ?? raw.word ?? '') : raw
+            const head = normalizeKey(String(headText ?? ''))
+            if (!head || head.length > 64) continue
         // 只收像英文单词的：字母开头，允许撇号与连字符
             if (!/^[a-z][a-z'-]*$/.test(head)) continue
-            if (words.has(head)) continue
-            words.set(head, {
-              head,
-              addedAt: Date.now(),
-              source: typeof source === 'string' ? source : 'import',
-              note: '',
-              review: { seen: 0, lastSeenAt: 0 },
-            })
+
+            const gloss = asObject && typeof raw.gloss === 'string' && raw.gloss !== ''
+              ? raw.gloss.slice(0, GLOSS_MAX)
+              : glossOf(glosses, head)
+
+            const existing = words.get(head)
+            if (existing) {
+              let changed = false
+              if (gloss !== '' && existing.gloss === '') {
+                existing.gloss = gloss
+                changed = true
+              }
+              if (target !== existing.bookId && !(Array.isArray(existing.alsoIn) && existing.alsoIn.includes(target))) {
+                existing.alsoIn = [...(existing.alsoIn ?? []), target]
+                changed = true
+              }
+              if (changed) {
+                await persist(head)
+                touched += 1
+              }
+              continue
+            }
+
+            const entry = makeEntry(head, src, target)
+            entry.gloss = gloss
+        // 备份恢复：保留原来的状态、SRS、备注、时间、归属书
+            if (asObject) {
+              if (typeof raw.note === 'string') entry.note = raw.note.slice(0, NOTE_MAX)
+              if (WORD_STATES.includes(raw.state)) entry.state = raw.state
+              if (raw.srs && typeof raw.srs === 'object') entry.srs = normalizeSrs(raw.srs)
+              if (Number.isFinite(raw.addedAt)) entry.addedAt = raw.addedAt
+              if (typeof raw.source === 'string' && raw.source !== '') entry.source = raw.source
+              if (typeof raw.bookId === 'string' && raw.bookId !== '') entry.bookId = raw.bookId
+              const extra = Array.isArray(raw.alsoIn)
+                ? [...new Set(raw.alsoIn.filter((id) => typeof id === 'string' && id !== '' && id !== entry.bookId))]
+                : []
+              if (extra.length > 0) entry.alsoIn = extra
+            }
+            words.set(head, entry)
+        // 备份里的书可能不存在，补一本占位书，别让词归到不存在的书上
+            if (!books.has(entry.bookId)) {
+              books.set(entry.bookId, {
+                id: entry.bookId, name: entry.bookId, createdAt: Date.now(), builtin: false,
+              })
+              await persistBook(entry.bookId)
+            }
             await persist(head)
             added += 1
           }
-          if (added > 0) {
+          if (added > 0 || touched > 0) {
             saveLocal()
+            saveLocalBooks()
             emit()
           }
           return added
+        },
+
+    /**
+     * 导出完整 v2 记录数组（JSON 备份用，可被 importMany 还原）。
+     *
+     * @returns {WordbookEntry[]}
+     */
+        exportAll() {
+          return [...words.values()].map((entry) => ({
+            ...entry,
+            srs: { ...entry.srs },
+            review: { ...entry.review },
+            ...(Array.isArray(entry.alsoIn) ? { alsoIn: [...entry.alsoIn] } : {}),
+          }))
         },
 
         subscribe(listener) {
@@ -2022,6 +2739,8 @@ window.__ModuleLoader__.load({
  * 所以只取每行**第一个形如英文单词的片段**，其余丢掉。
  *
  * 也能处理 CSV（取第一列）和纯词表（一行一词）。
+ *
+ * 只返回词头是旧契约；带释义/跳过原因的详细版在 importer.js（B 块）。
  *
  * @param {string} text
  * @returns {string[]} 去重后的单词数组
@@ -2046,8 +2765,1850 @@ window.__ModuleLoader__.load({
       }
       return out
     }
-
       return { createWordbook, parseImportText }
+    })()
+
+    // ═══ importer.js ═══
+    var __mod_importer = (function () {
+      var { normalizeKey } = __mod_word
+/**
+ * importer.js —— 粘贴导入的解析层，全部纯函数。
+ *
+ * 为什么单独一个文件：解析规则（格式识别、词头抽取、释义/音标切分、跳过原因）
+ * 是**能在 node 里直测**的逻辑，和 React 无关。设置页只负责把结果画成预览表，
+ * 不负责猜文本长什么样。
+ *
+ * 支持五种来源（设计-v2 §B2）：
+ *   plain   一行一词，或「词 音标 释义」单空格分隔
+ *   csv     逗号分隔，首行可能是表头
+ *   tsv     Tab 分隔（从 Excel/词书工具直接复制）
+ *   json    合法 JSON 数组：字符串，或 {head|word, gloss|translation} 对象；
+ *           也兼容本插件 exportAll 的备份（带 state/srs/bookId，恢复时原样保留）
+ *   youdao  有道导出的整段：词 + /音标/ 或 [音标] + 释义，双空格分隔
+ *
+ * 输出形状固定为 `{ words, skipped, format }`：
+ *   words[]   { head, gloss, phonetic, line, status, record? }
+ *   skipped[] { line, raw, reason }
+ *   status    'new'（将新增） | 'dup'（已在生词本） | 'nodict'（词库查不到）
+ *
+ * 「不静默丢行」：每一行没进入 words 都要在 skipped 里留一条原因。
+ */
+
+
+/** 认识的格式。 */
+    const IMPORT_FORMATS = ['plain', 'csv', 'tsv', 'json', 'youdao']
+
+/** 释义快照上限，与 wordbook 的 GLOSS_MAX 对齐。 */
+    const MAX_GLOSS = 120
+
+/** 词头只认「字母开头 + 字母/撇号/连字符」，与 wordbook.importMany 同一条规则。 */
+    const HEAD_RE = /^[a-z][a-z'-]{0,63}$/
+
+/** 汉字（含扩展 A 与常用标点区不参与判断）。 */
+    const HAN = /[\u3400-\u4dbf\u4e00-\u9fff]/
+
+/** 音标：/…/ 或 […] 。有道与 ECDICT 导出都用这两种写法。 */
+    const PHONETIC = /(\/[^/\n\r]{1,40}\/|\[[^\]\n\r]{1,40}\])/
+
+/** 裸音标（列式导出里常见，没有斜杠外壳）：IPA 字符 + 重音符 + 字母数字，无汉字。 */
+    const BARE_PHONETIC = /^[a-zæɑɒɔəɜɪʊʌʃʒθðŋːˈˌˑ.,\s'-]{1,40}$/i
+
+/**
+ * 表头首字段。只在「这一行确实有多列」时才算表头 ——
+ * 否则用户想导入单词 `word` 本身就会被吃掉。
+ */
+    const HEADER_FIRST = new Set([
+      'word', 'words', 'head', 'term', 'terms', 'spelling', 'english', 'no', 'index',
+      '单词', '英文', '词汇', '词头', '序号',
+      'phonetic', 'pron', '音标', 'pronunciation',
+      'meaning', 'translation', 'gloss', '释义', '翻译', '中文', '词义',
+    ])
+
+/** 取第一行有内容的行（跳过空行与 # 注释）。 */
+    function firstContentLine(text) {
+      for (const raw of text.split(/\r?\n/)) {
+        const line = raw.trim()
+        if (line === '' || line.startsWith('#')) continue
+        return line
+      }
+      return ''
+    }
+
+/**
+ * 识别文本格式。识别不出来一律当 plain（plain 是最宽松的，不会漏词）。
+ *
+ * @param {string} text
+ * @returns {'plain'|'csv'|'tsv'|'json'|'youdao'}
+ */
+    function detectImportFormat(text) {
+      if (typeof text !== 'string' || text.trim() === '') return 'plain'
+      const trimmed = text.trim()
+      if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+        try {
+          const parsed = JSON.parse(trimmed)
+          if (Array.isArray(parsed)) return 'json'
+          if (parsed && typeof parsed === 'object' && Array.isArray(parsed.words)) return 'json'
+        } catch { /* 不是合法 JSON，继续按文本猜 */ }
+      }
+      const line = firstContentLine(text)
+      if (line === '') return 'plain'
+      if (line.includes('\t') && line.split('\t').filter((part) => part.trim() !== '').length >= 2) return 'tsv'
+      if (line.includes(',') && line.split(',').filter((part) => part.trim() !== '').length >= 2) return 'csv'
+      if (/\s{2,}/.test(line) && PHONETIC.test(line)) return 'youdao'
+      return 'plain'
+    }
+
+/** 把一行按格式切成若干字段。 */
+    function splitFields(line, format) {
+      if (format === 'csv') return line.split(',').map((part) => part.trim())
+      if (format === 'tsv') return line.split('\t').map((part) => part.trim())
+  // plain / youdao：双空格或 Tab 分隔；单空格的分隔交给「首词 + 剩余」处理
+      if (/\s{2,}|\t/.test(line)) return line.split(/\s{2,}|\t/).map((part) => part.trim())
+      return null
+    }
+
+/** 去掉包裹的引号与首尾空白。 */
+    const unquote = (value) => String(value ?? '').trim().replace(/^["'“”‘’]|["'“”‘’]$/g, '').trim()
+
+/**
+ * 造一行预览数据。
+ *
+ * @param {string} head 已 normalize 的词头
+ * @param {string} gloss 中文释义（可能为空）
+ * @param {string} phonetic 音标（带 /…/ 或 […] 外壳，可能为空）
+ * @param {number} line 原始行号（JSON 用元素序号）
+ * @param {{ isDup: Function, isKnown: Function }} probes
+ */
+    function makeRow(head, gloss, phonetic, line, probes, extra) {
+      const status = probes.isDup(head) ? 'dup' : probes.isKnown(head) ? 'new' : 'nodict'
+      const row = { head, gloss, phonetic, line, status }
+      if (extra && typeof extra === 'object') row.record = extra
+      return row
+    }
+
+/**
+ * 从「首字段之外的剩余文本」里切出音标与释义。
+ *
+ * 音标只当识别标记：设计规定不单独建字段，写库时拼在 gloss 前缀。
+ * 两种写法都认：带外壳的 `/…/`、`[…]`，以及 CSV/TSV 里单独一列的裸 IPA
+ * （列式导出经常这样，如 `apple,ˈæpl,n. 苹果`）。
+ */
+    function splitGlossAndPhonetic(rest) {
+      const text = String(rest ?? '').replace(/\s+/g, ' ').trim()
+      if (text === '') return { gloss: '', phonetic: '' }
+
+      const match = PHONETIC.exec(text)
+      if (match) {
+        const phonetic = match[0]
+        const without = `${text.slice(0, match.index)} ${text.slice(match.index + phonetic.length)}`
+          .replace(/\s+/g, ' ').trim()
+        return { gloss: HAN.test(without) ? without.slice(0, MAX_GLOSS) : '', phonetic }
+      }
+
+  // 裸 IPA：首段没有汉字、且带 IPA 专用字符，就当作音标摘掉
+      const first = text.split(' ')[0]
+      if (BARE_PHONETIC.test(first) && !HAN.test(first) && /[ˈˌːəɪʊʃʒθðŋæɑɒɔɜʌ]/.test(first)) {
+        const without = text.slice(first.length).trim()
+        return { gloss: HAN.test(without) ? without.slice(0, MAX_GLOSS) : '', phonetic: first }
+      }
+
+      return { gloss: HAN.test(text) ? text.slice(0, MAX_GLOSS) : '', phonetic: '' }
+    }
+
+/** 文本行模式（plain / csv / tsv / youdao）。 */
+    function parseLines(text, format, opts) {
+      const words = []
+      const skipped = []
+      const seen = new Set()
+      const lines = text.split(/\r?\n/)
+
+      for (let i = 0; i < lines.length; i += 1) {
+        const raw = lines[i]
+        const line = raw.trim()
+        const lineNo = i + 1
+        if (line === '') {
+          skipped.push({ line: lineNo, raw: '', reason: '空行' })
+          continue
+        }
+        if (line.startsWith('#')) {
+          skipped.push({ line: lineNo, raw: line.slice(0, 80), reason: '注释行' })
+          continue
+        }
+
+        const fields = splitFields(line, format)
+    // plain 模式下「单空格分隔」不算分隔符：首词就是词头，剩下的是释义
+        const firstField = fields ? fields[0] : (line.split(/\s+/)[0] ?? '')
+        const rest = fields
+          ? fields.slice(1).join(' ')
+          : line.split(/\s+/).slice(1).join(' ')
+
+    // 表头：只有多列时才算，且只在还没收到任何词之前
+        if (opts.skipHeader && words.length === 0 && fields && fields.length >= 2
+          && HEADER_FIRST.has(unquote(firstField).toLowerCase())) {
+          skipped.push({ line: lineNo, raw: line.slice(0, 80), reason: '表头行' })
+          continue
+        }
+
+    // 首字段可能带引号或序号前缀；plain 模式首字段就是第一个非空白片段
+        const head = normalizeKey(unquote(firstField))
+        if (!HEAD_RE.test(head)) {
+          skipped.push({ line: lineNo, raw: line.slice(0, 80), reason: '不是英文单词' })
+          continue
+        }
+        if (seen.has(head)) {
+          skipped.push({ line: lineNo, raw: line.slice(0, 80), reason: '重复行' })
+          continue
+        }
+        seen.add(head)
+        const { gloss, phonetic } = splitGlossAndPhonetic(rest)
+        words.push(makeRow(head, gloss, phonetic, lineNo, opts))
+      }
+
+      return { words, skipped, format }
+    }
+
+/** JSON 数组模式。 */
+    function parseJson(text, opts) {
+      const words = []
+      const skipped = []
+      const seen = new Set()
+      let parsed = null
+      try {
+        parsed = JSON.parse(text.trim())
+      } catch {
+        return {
+          words,
+          skipped: [{ line: 1, raw: text.trim().slice(0, 80), reason: 'JSON 解析失败' }],
+          format: 'json',
+        }
+      }
+      const list = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.words) ? parsed.words : [])
+      if (list.length === 0) {
+        return { words, skipped: [{ line: 1, raw: '', reason: 'JSON 里没有词条' }], format: 'json' }
+      }
+
+      for (let i = 0; i < list.length; i += 1) {
+        const item = list[i]
+        const lineNo = i + 1
+        const isObject = item && typeof item === 'object' && !Array.isArray(item)
+        const rawHead = isObject ? (item.head ?? item.word ?? '') : item
+        const head = normalizeKey(unquote(rawHead))
+        if (!HEAD_RE.test(head)) {
+          skipped.push({ line: lineNo, raw: JSON.stringify(item).slice(0, 80), reason: '不是英文单词' })
+          continue
+        }
+        if (seen.has(head)) {
+          skipped.push({ line: lineNo, raw: JSON.stringify(item).slice(0, 80), reason: '重复行' })
+          continue
+        }
+        seen.add(head)
+        const gloss = isObject
+          ? String(item.gloss ?? item.translation ?? item.meaning ?? '').trim().slice(0, MAX_GLOSS)
+          : ''
+        const phonetic = isObject && typeof item.phonetic === 'string' ? item.phonetic.trim() : ''
+    // 备份恢复：整条记录原样带下去，importMany 会保住 state/srs/bookId
+        words.push(makeRow(head, gloss, phonetic, lineNo, opts, isObject ? item : undefined))
+      }
+
+      return { words, skipped, format: 'json' }
+    }
+
+/**
+ * 解析用户粘贴/导入的内容，给出逐行预览。
+ *
+ * @param {string} text
+ * @param {{
+ *   isDup?: (head: string) => boolean,
+ *   isKnown?: (head: string) => boolean,
+ *   skipHeader?: boolean,
+ * }} [opts]
+ *   isDup：这个词是否已在生词本（决定 dup 徽章）
+ *   isKnown：词库能否查到（决定 nodict 徽章）；不给就一律当查得到
+ *   skipHeader：是否跳过表头行，默认 true
+ * @returns {{
+ *   words: Array<{head:string, gloss:string, phonetic:string, line:number, status:'new'|'dup'|'nodict', record?:object}>,
+ *   skipped: Array<{line:number, raw:string, reason:string}>,
+ *   format: 'plain'|'csv'|'tsv'|'json'|'youdao',
+ * }}
+ */
+    function parseImportDetailed(text, opts) {
+      const options = opts && typeof opts === 'object' ? opts : {}
+      const probes = {
+        isDup: typeof options.isDup === 'function' ? options.isDup : () => false,
+        isKnown: typeof options.isKnown === 'function' ? options.isKnown : () => true,
+      }
+      if (typeof text !== 'string' || text.trim() === '') {
+        return { words: [], skipped: [], format: 'plain' }
+      }
+      const format = detectImportFormat(text)
+      const parsed = format === 'json'
+        ? parseJson(text, probes)
+        : parseLines(text, format, { ...probes, skipHeader: options.skipHeader !== false })
+      return parsed
+    }
+
+/**
+ * 一行预览数据在写库时应该用的释义字符串。
+ *
+ * 音标不单独建字段（设计 §B2），拼在释义前缀里。
+ *
+ * @param {{ gloss?: string, phonetic?: string }} row
+ * @returns {string}
+ */
+    function glossText(row) {
+      if (!row || typeof row !== 'object') return ''
+      const phonetic = typeof row.phonetic === 'string' ? row.phonetic.trim() : ''
+      const gloss = typeof row.gloss === 'string' ? row.gloss.trim() : ''
+      return `${phonetic} ${gloss}`.trim().slice(0, MAX_GLOSS)
+    }
+
+/**
+ * 预览汇总：识别多少词、新增/已存在/未收录各多少。
+ *
+ * @param {{ words: Array<{status:string}>, skipped: Array<object> }} parsed
+ * @returns {{ total:number, fresh:number, dup:number, nodict:number, skipped:number }}
+ */
+    function summarizeImport(parsed) {
+      const words = Array.isArray(parsed?.words) ? parsed.words : []
+      const out = { total: words.length, fresh: 0, dup: 0, nodict: 0, skipped: Array.isArray(parsed?.skipped) ? parsed.skipped.length : 0 }
+      for (const row of words) {
+        if (row.status === 'dup') out.dup += 1
+        else if (row.status === 'nodict') out.nodict += 1
+        else out.fresh += 1
+      }
+      return out
+    }
+      return { IMPORT_FORMATS, detectImportFormat, parseImportDetailed, glossText, summarizeImport }
+    })()
+
+    // ═══ review.js ═══
+    var __mod_review = (function () {
+      var { briefOf, describeEntry } = __mod_dict
+      var { normalizeKey } = __mod_word
+/**
+ * review.js —— 复习卡片（设计-v2 §B3）。
+ *
+ * 词海口径的刷词卡：从 `wordbook.dueQueue()` 出题，翻面看释义，三键评分。
+ *
+ * 分工：
+ *   - 纯函数（出题队列、进度、成绩）留在本文件导出的普通函数里，node 可测；
+ *   - React 部分只拿这些函数的结果画界面，不自己算。
+ *
+ * 键盘：空格/回车翻面，1/2/3 评分，Esc 退出本轮。
+ * 焦点在输入框里时不抢键 —— 复习页没有输入框，但仍然照规矩判一遍。
+ */
+
+
+/** 三个评分按钮的显示文案，与设计 §B3 一致。 */
+    const GRADE_BUTTONS = Object.freeze([
+      { grade: 'again', key: '1', label: '✗ 不认识', tone: 'danger', state: 'unknown' },
+      { grade: 'hard', key: '2', label: '↻ 记错', tone: 'warn', state: 'fuzzy' },
+      { grade: 'good', key: '3', label: '✓ 认识', tone: 'success', state: 'known' },
+    ])
+
+/** 筛选芯片：全部到期 / 只刷不认识 / 只刷记错 / 指定词书（词书由下拉另选）。 */
+    const REVIEW_FILTERS = Object.freeze([
+      { id: 'all', label: '全部到期' },
+      { id: 'unknown', label: '只刷不认识' },
+      { id: 'fuzzy', label: '只刷记错' },
+    ])
+
+/** 队列空时的「提前复习」取多少个。 */
+    const AHEAD_COUNT = 20
+
+/** 方向：英→中 / 中→英。 */
+    const DIRECTIONS = Object.freeze([
+      { id: 'en-zh', label: '英 → 中' },
+      { id: 'zh-en', label: '中 → 英' },
+    ])
+
+/**
+ * 词条属于哪几本词书。
+ *
+ * @param {object} entry
+ * @returns {string[]}
+ */
+    function booksOfEntry(entry) {
+      if (!entry || typeof entry !== 'object') return []
+      const out = []
+      if (typeof entry.bookId === 'string' && entry.bookId !== '') out.push(entry.bookId)
+      if (Array.isArray(entry.alsoIn)) {
+        for (const id of entry.alsoIn) {
+          if (typeof id === 'string' && id !== '' && !out.includes(id)) out.push(id)
+        }
+      }
+      return out
+    }
+
+/**
+ * 按筛选条件从词条数组里取复习队列。
+ *
+ * @param {object[]} entries 通常来自 `wordbook.dueQueue(now)`
+ * @param {{ state?: 'all'|'unknown'|'fuzzy', bookId?: string }} [filter]
+ * @returns {object[]}
+ */
+    function filterQueue(entries, filter) {
+      const list = Array.isArray(entries) ? entries.filter((e) => e && typeof e.head === 'string' && e.head !== '') : []
+      const state = filter?.state ?? 'all'
+      const bookId = typeof filter?.bookId === 'string' && filter.bookId !== '' ? filter.bookId : ''
+      return list.filter((entry) => {
+        if (state !== 'all' && entry.state !== state) return false
+        if (bookId !== '') {
+          const books = booksOfEntry(entry)
+          if (!books.includes(bookId)) return false
+        }
+        return true
+      })
+    }
+
+/**
+ * 中→英方向可用性：没有释义的词不进这个队列（设计 §B3）。
+ *
+ * @param {object} entry
+ * @param {object|null} dict 词库对象（可能还没加载）
+ * @returns {string} 可用于出题的释义；空串表示这个词不能从前向后问
+ */
+    function briefTextFor(entry, dict) {
+      if (!entry || typeof entry !== 'object') return ''
+      if (typeof entry.gloss === 'string' && entry.gloss.trim() !== '') return entry.gloss.trim()
+      const head = normalizeKey(entry.head)
+      const raw = dict?.entries?.[head]
+      if (!raw) return ''
+      try {
+        const brief = briefOf(raw)
+        return typeof brief?.zh === 'string' ? brief.zh.trim() : ''
+      } catch {
+        return ''
+      }
+    }
+
+/**
+ * 为某个方向准备队列：中→英会剔掉没有释义的词。
+ *
+ * @param {object[]} queue
+ * @param {'en-zh'|'zh-en'} direction
+ * @param {object|null} dict
+ * @returns {object[]}
+ */
+    function queueForDirection(queue, direction, dict) {
+      const list = Array.isArray(queue) ? queue : []
+      if (direction !== 'zh-en') return list.slice()
+      return list.filter((entry) => briefTextFor(entry, dict) !== '')
+    }
+
+/**
+ * 取一个词的卡片背面内容（词性 + 中文义项 ≤3 + 例句 1 条）。
+ *
+ * 例句形状跟 describeEntry 一致，是 `{ en, zh }` 对象（架构 §4.5 的渲染契约），
+ * 不是 `[en, zh]` 数组 —— 这里不再二次转换，免得两处形状打架。
+ *
+ * @param {string} head
+ * @param {object|null} dict
+ * @returns {{ senses: Array<{pos:string,posLabel:string,zh:string[]}>, example: {en:string,zh:string}|null, gloss: string }}
+ */
+    function cardBackFor(head, dict) {
+      const empty = { senses: [], example: null, gloss: '' }
+      const key = normalizeKey(head)
+      if (key === '') return empty
+      const raw = dict?.entries?.[key]
+      if (!raw) return empty
+      try {
+        const described = describeEntry(raw)
+        const senses = described.senses.slice(0, 3).map((sense) => ({
+          pos: sense.pos,
+          posLabel: sense.posLabel,
+          zh: Array.isArray(sense.zh) ? sense.zh.slice(0, 2) : [],
+        }))
+        const example = described.examples.length > 0 ? described.examples[0] : null
+        return { senses, example, gloss: '' }
+      } catch {
+        return empty
+      }
+    }
+
+/**
+ * 本轮成绩：正确率 + 三态变化。
+ *
+ * @param {Array<{grade:string}>} answered 本轮已评分的记录
+ * @returns {{ total:number, correct:number, again:number, hard:number, good:number, accuracy:number }}
+ */
+    function roundSummary(answered) {
+      const list = Array.isArray(answered) ? answered : []
+      let again = 0
+      let hard = 0
+      let good = 0
+      for (const row of list) {
+        if (row?.grade === 'again') again += 1
+        else if (row?.grade === 'hard') hard += 1
+        else if (row?.grade === 'good') good += 1
+      }
+      const total = again + hard + good
+      return {
+        total,
+        correct: good,
+        again,
+        hard,
+        good,
+        accuracy: total === 0 ? 0 : Math.round((good / total) * 100),
+      }
+    }
+
+/** 相对时间：今天 / 明天 / N 天后 / 已到期。 */
+    function dueLabel(due, now = Date.now()) {
+      const at = Number.isFinite(due) ? due : 0
+      if (at <= now) return '已到期'
+      const days = Math.ceil((at - now) / 86400000)
+      if (days <= 1) return '今天或明天'
+      return `${days} 天后`
+    }
+
+/**
+ * 从「最早到期」里取前 N 个，用于空队列时的「提前复习」。
+ *
+ * @param {object[]} entries 全部词条（不是 dueQueue 的结果）
+ * @param {number} [count]
+ * @param {number} [now]
+ * @returns {object[]}
+ */
+    function aheadQueue(entries, count = AHEAD_COUNT, now = Date.now()) {
+      const list = Array.isArray(entries) ? entries.filter((e) => e && typeof e.head === 'string' && e.head !== '') : []
+      return list
+        .slice()
+        .sort((a, b) => {
+          const da = Number.isFinite(a.srs?.due) ? a.srs.due : 0
+          const db = Number.isFinite(b.srs?.due) ? b.srs.due : 0
+          if (da !== db) return da - db
+          return (a.addedAt ?? 0) - (b.addedAt ?? 0)
+        })
+        .slice(0, Math.max(1, Number.isFinite(count) ? count : AHEAD_COUNT))
+    }
+
+/**
+ * 判断键盘事件该不该被复习卡接管。
+ *
+ * 焦点在输入框/文本域/可编辑区里时不抢键（设计 §B3）。
+ *
+ * @param {object} event 键盘事件
+ * @returns {boolean}
+ */
+    function shouldHandleKey(event) {
+      if (!event || typeof event !== 'object') return false
+      if (event.defaultPrevented === true) return false
+      if (event.ctrlKey === true || event.metaKey === true || event.altKey === true) return false
+      const target = event.target
+      if (target && typeof target === 'object') {
+        const tag = typeof target.tagName === 'string' ? target.tagName.toUpperCase() : ''
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return false
+        if (target.isContentEditable === true) return false
+      }
+      const key = typeof event.key === 'string' ? event.key : ''
+      if (key === ' ' || key === 'Spacebar' || key === 'Enter' || key === 'Escape') return true
+      return key === '1' || key === '2' || key === '3'
+    }
+
+/** 键盘键 → 动作。 */
+    function actionForKey(key) {
+      if (key === ' ' || key === 'Spacebar' || key === 'Enter') return 'flip'
+      if (key === 'Escape') return 'exit'
+      if (key === '1') return 'again'
+      if (key === '2') return 'hard'
+      if (key === '3') return 'good'
+      return ''
+    }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   发音（设计 §E1）
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/**
+ * 这个环境能不能发音。
+ *
+ * 一律先判空再渲染按钮：不支持的浏览器上留一个点了没反应的 🔊，
+ * 比不显示更糟 —— 用户会以为插件坏了。
+ *
+ * @returns {boolean}
+ */
+    function canSpeak() {
+      if (typeof speechSynthesis === 'undefined') return false
+      if (typeof SpeechSynthesisUtterance === 'undefined') return false
+      return typeof speechSynthesis.speak === 'function'
+    }
+
+/**
+ * 念一个词；已经在念同一个词就停下（再点一次 = 停止）。
+ *
+ * 只走浏览器内置的 speechSynthesis，不引在线发音接口（离线红线）。
+ * 任何异常都吃掉并返回 'failed'，卡片渲染路径上不能抛。
+ *
+ * @param {string} word
+ * @returns {'speak' | 'stop' | 'unsupported' | 'failed'}
+ */
+    function speakWord(word) {
+      if (!canSpeak()) return 'unsupported'
+      const text = String(word ?? '').trim()
+      if (text === '') return 'failed'
+      try {
+    // 再点一次 = 停止（设计 §E1）。先判有没有在念，有就 cancel 并返回 stop。
+        if (speechSynthesis.speaking === true || speechSynthesis.pending === true) {
+          speechSynthesis.cancel()
+          return 'stop'
+        }
+    // 上一次的残留先清掉，避免队列里堆着旧词
+        speechSynthesis.cancel()
+        const utterance = new SpeechSynthesisUtterance(text)
+        utterance.lang = 'en-US'
+        utterance.rate = 0.9
+        speechSynthesis.speak(utterance)
+        return 'speak'
+      } catch {
+        return 'failed'
+      }
+    }
+
+/**
+ * 🔊 发音按钮。
+ *
+ * 不支持 speechSynthesis 时**返回 null**，不留死按钮（设计 §E1）。
+ * 样式写死在这里而不是 overlay.js 的 CSS 表：card.js 与 review 卡都在
+ * 各自的容器里，一处内联比两处类名更好维护，也不用改动范围外的文件。
+ *
+ * @param {object} props
+ * @param {string} props.word
+ * @param {'sm'|'md'} [props.size]
+ * @returns {import('react').ReactElement | null}
+ */
+    function PronounceButton(props) {
+      if (!canSpeak()) return null
+      const word = String(props?.word ?? '').trim()
+      if (word === '') return null
+      const small = props?.size === 'sm'
+      const [speaking, setSpeaking] = useState(false)
+      return h('button', {
+        type: 'button',
+        className: 'hd-speak',
+        title: speaking ? '停止发音' : `朗读 ${word}`,
+        'aria-label': speaking ? '停止发音' : `朗读 ${word}`,
+        'data-speaking': speaking ? 'true' : undefined,
+        style: {
+          flex: 'none',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: small ? 22 : 26,
+          height: small ? 22 : 26,
+          padding: 0,
+          border: 'none',
+          borderRadius: 6,
+          background: 'transparent',
+          color: speaking
+            ? 'var(--dsw-alias-brand-primary, #4d6bfe)'
+            : 'var(--dsw-alias-label-secondary, #999)',
+          fontSize: small ? 12 : 14,
+          lineHeight: 1,
+          cursor: 'pointer',
+          transition: 'color .18s ease, background .18s ease',
+        },
+        onPointerDown: (event) => event.stopPropagation(),
+        onMouseDown: (event) => { event.preventDefault(); event.stopPropagation() },
+        onClick: (event) => {
+          event.preventDefault()
+          event.stopPropagation()
+          const result = speakWord(word)
+          setSpeaking(result === 'speak')
+        },
+      }, '🔊')
+    }
+
+/**
+ * 复习卡背面的内容块（设计 §B3 背面 + §E1 发音）。
+ *
+ * 为什么放在 review.js 而不是设置页里：这是「复习卡的卡片」本身的形状，
+ * 和出题/评分同属一层；设置页只负责把它塞进自己的容器里。
+ * 背面 = 词头（带 🔊）+ 词性义项（≤3）+ 例句（有则 1 条）。
+ *
+ * @param {object} props
+ * @param {string} props.word 词头
+ * @param {{ senses: Array<{posLabel:string, zh:string[]}>, example: {en:string,zh:string}|null }} props.back
+ * @param {string} [props.gloss] 词库未收录时的释义快照
+ * @param {'sm'|'md'} [props.size] 词头字号档位
+ * @param {object} [props.P] makePrimitives 的返回（取 GAP/C/FS）
+ * @returns {import('react').ReactElement}
+ */
+    function ReviewCardBack(props) {
+      const back = props?.back ?? { senses: [], example: null }
+      const senses = Array.isArray(back.senses) ? back.senses.slice(0, 3) : []
+      const example = back.example && typeof back.example === 'object' ? back.example : null
+      const gloss = typeof props?.gloss === 'string' ? props.gloss.trim() : ''
+      const P = props?.P ?? {}
+      const FS = P.FS ?? { title: 15, body: 13, small: 11.5 }
+      const C = P.C ?? {
+        text: 'var(--dsw-alias-label-primary, #1a1a1a)',
+        textDim: 'var(--dsw-alias-label-secondary, #5c5c5c)',
+        border2: 'var(--dsw-alias-border-l2, rgba(0,0,0,.18))',
+      }
+
+  // 词头 + 发音按钮：词头单独一行，按钮紧贴其后（设计 §E1 的「词头旁」）
+      const head = h('div', {
+        key: 'head',
+        style: { display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, flexWrap: 'wrap' },
+      }, [
+        h('span', {
+          key: 'w',
+          style: {
+            fontSize: props?.size === 'sm' ? FS.title : FS.title + 5,
+            fontWeight: 680,
+            letterSpacing: '-.5px',
+            lineHeight: 1.3,
+            fontFamily: 'var(--ds-font-family-code, ui-monospace, monospace)',
+            overflowWrap: 'anywhere',
+          },
+        }, String(props?.word ?? '')),
+        h(PronounceButton, { key: 'speak', word: props?.word ?? '' }),
+      ])
+
+      const body = []
+      if (senses.length > 0) {
+        for (let i = 0; i < senses.length; i += 1) {
+          const sense = senses[i]
+          body.push(h('div', {
+            key: `s${i}`,
+            style: { display: 'flex', gap: 7, alignItems: 'baseline', justifyContent: 'center', flexWrap: 'wrap' },
+          }, [
+            sense?.posLabel ? h('span', {
+              key: 'p',
+              style: {
+                fontSize: 10.5,
+                lineHeight: 1.7,
+                padding: '0 6px',
+                borderRadius: 999,
+                border: `1px solid ${C.border2}`,
+                color: C.textDim,
+              },
+            }, sense.posLabel) : null,
+            h('span', { key: 'z' }, (sense?.zh ?? []).join('；')),
+          ]))
+        }
+      } else {
+        body.push(h('div', {
+          key: 'g',
+          style: { display: 'flex', gap: 7, justifyContent: 'center', flexWrap: 'wrap' },
+        }, h('span', { key: 'z', style: { color: C.textDim } }, gloss || '词库未收录，暂无释义')))
+      }
+
+      if (example && example.en) {
+        body.push(h('div', {
+          key: 'ex',
+          style: {
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 2,
+            fontSize: FS.small + 0.5,
+            lineHeight: 1.9,
+            color: C.textDim,
+            maxWidth: '52ch',
+            borderTop: `1px dashed ${C.border2}`,
+            paddingTop: 8,
+            textAlign: 'center',
+          },
+        }, [
+          h('div', { key: 'en' }, example.en),
+          example.zh ? h('div', { key: 'zh', style: { opacity: 0.82 } }, example.zh) : null,
+        ]))
+      }
+
+      return h('div', {
+        style: { display: 'flex', flexDirection: 'column', gap: 8, alignItems: 'center', width: '100%' },
+      }, [head, ...body])
+    }
+
+
+      return { GRADE_BUTTONS, REVIEW_FILTERS, AHEAD_COUNT, DIRECTIONS, booksOfEntry, filterQueue, briefTextFor, queueForDirection, cardBackFor, roundSummary, dueLabel, aheadQueue, shouldHandleKey, actionForKey, canSpeak, speakWord, PronounceButton, ReviewCardBack }
+    })()
+
+    // ═══ marker.js ═══
+    var __mod_marker = (function () {
+      var { SELECTORS, HIT_BLOCKERS } = __mod_hit
+      var { normalizeKey } = __mod_word
+      var { DEFAULT_MARK_COLOR, MARK_STYLES, THEME_ERROR_COLOR } = __mod_config
+/**
+ * marker.js —— 正文/思考区生词着色（设计-v2 §C）。
+ *
+ * 用户需求原话：不会的单词在思考过程中是红色（可改颜色也可选择直接不变颜色），
+ * 一眼看见自己之前不会的词。
+ *
+ * 本文件分三层，边界刻意分开：
+ *   1. **纯函数层**（本任务主体）：词集展开、文本词匹配、视口裁剪、上限截断、
+ *      扫描器、重算调度器 —— 全部不碰 React，可以 `node client/test/_marker.mjs` 直测；
+ *   2. **量矩形**：只读 `Range.getClientRects()`，与 anchor.js 同一思路；
+ *   3. **MarkerLayer**：把已经算好的色块画成 `position:fixed` 的 div，
+ *      渲染进 `shell.overlay`（唯一 `h`/React 依赖点，由构建前导注入）。
+ *
+ * 红线（设计 §0 / 架构 §2）：**绝不改正文 DOM**。这里不建 span、不改正文节点属性、
+ * 不写 textContent。着色只画在覆盖层里，垫在文字底下。
+ *
+ * 思考区判定用 `[data-variant="think"]`（设计 §G 已从宿主产物核实）。
+ */
+
+
+/** 主路径：CSS Custom Highlight API 的注册名（正文/思考生词）。 */
+    const HIGHLIGHT_WORDS = 'dsh-hover-dict-words'
+
+/** 已掌握词单独一个 highlight（淡色；用户开了「已掌握也显示」才用）。 */
+    const HIGHLIGHT_KNOWN = 'dsh-hover-dict-known'
+
+/** 单帧色块上限。超出按距视口中心距离取最近的（设计 §C2.3，**仅回退路径**）。 */
+    const MARK_MAX = 400
+
+/** 视口裁剪余量：上下左右各留这么多像素，滚动手感不会缺一块。 */
+    const VIEWPORT_PAD_PX = 200
+
+/** 滚动重算节流间隔（设计 §C2.4）。 */
+    const SCROLL_THROTTLE_MS = 120
+
+/** 正文变化的防抖间隔。流式输出期间靠它把重渲染合并成低频重算（§G 硬要求）。 */
+    const MUTATION_DEBOUNCE_MS = 250
+
+/** 思考区根节点的特征属性。折叠时正文不在 DOM，TreeWalker 天然扫不到。 */
+    const THINK_SELECTOR = '[data-variant="think"]'
+
+/**
+ * 词匹配用的正则：字母开头，后可跟字母、撇号（直/弯）、连字符，总长 ≤ 64。
+ * 与 word.js 的 MAX_WORD_LEN 口径一致。
+ */
+    const WORD_PATTERN = /[A-Za-z][A-Za-z'’-]{0,63}/g
+
+/** 一个矩形，视口坐标系（与 getBoundingClientRect 一致）。 */
+/**
+ * @typedef {object} MarkerRect
+ * @property {number} left
+ * @property {number} top
+ * @property {number} right
+ * @property {number} bottom
+ * @property {number} width
+ * @property {number} height
+ */
+
+/**
+ * 一次词命中：文本节点内的字符区间 + 归一化后的词键。
+ *
+ * @typedef {object} MarkerHit
+ * @property {Text} node
+ * @property {number} start
+ * @property {number} end
+ * @property {string} text   原文片段（保留大小写，仅用于调试与日志）
+ * @property {string} key    normalizeKey 之后的键，查词集用
+ * @property {boolean} think 是否落在思考区
+ */
+
+/**
+ * 一个待画的色块组：一个命中的全部矩形（跨行会有多段）。
+ *
+ * @typedef {object} MarkerMark
+ * @property {string} key
+ * @property {string} text
+ * @property {boolean} think
+ * @property {boolean} known  词集里带「已掌握」标记的词（淡色显示）
+ * @property {MarkerRect[]} rects
+ * @property {MarkerRect | null} bounds
+ */
+
+/* ── 小工具 ─────────────────────────────────────────────────────────── */
+
+    const isNum = (value) => typeof value === 'number' && Number.isFinite(value)
+
+    const rectOf = (raw) => {
+      if (!raw || typeof raw !== 'object') return null
+      const left = isNum(raw.left) ? raw.left : NaN
+      const top = isNum(raw.top) ? raw.top : NaN
+      const right = isNum(raw.right) ? raw.right : (isNum(raw.width) && isNum(left) ? left + raw.width : NaN)
+      const bottom = isNum(raw.bottom) ? raw.bottom : (isNum(raw.height) && isNum(top) ? top + raw.height : NaN)
+      if (!Number.isFinite(left) || !Number.isFinite(top) || !Number.isFinite(right) || !Number.isFinite(bottom)) {
+        return null
+      }
+      return { left, top, right, bottom, width: right - left, height: bottom - top }
+    }
+
+/** 一组矩形取并集；空数组返回 null。 */
+    function unionRectsOf(rects) {
+      if (!Array.isArray(rects) || rects.length === 0) return null
+      let left = Infinity
+      let top = Infinity
+      let right = -Infinity
+      let bottom = -Infinity
+      for (const raw of rects) {
+        const rect = rectOf(raw)
+        if (!rect) continue
+        if (rect.left < left) left = rect.left
+        if (rect.top < top) top = rect.top
+        if (rect.right > right) right = rect.right
+        if (rect.bottom > bottom) bottom = rect.bottom
+      }
+      if (left === Infinity) return null
+      return { left, top, right, bottom, width: right - left, height: bottom - top }
+    }
+
+/* ── C1.1 词集展开 ─────────────────────────────────────────────────── */
+
+/**
+ * 把生词本展开成「要着色的词键集合」。
+ *
+ * 口径（设计 §C1）：
+ *   - 只取 `state !== 'known'` 的词；`known` 默认不着色（已掌握就不该再刺眼），
+ *     设置里开 `markKnown` 才收进来（渲染时给淡色）；
+ *   - 每个词头连同它的**变位**一起收：变位串在词条槽 5 起、格式 `p:ran/i:running`，
+ *     与 dict.js `parseForms` / app.js `collectBookSet` 同一条规则
+ *     （架构.md 旧文档写的槽 3 已作废，别按那个写）。
+ *
+ * 词集为空是常态（新用户），调用方据此直接清空色块、跳过整轮扫描。
+ *
+ * @param {object} input
+ * @param {Iterable<{ head: string, state?: string }>} [input.entries] 生词本 list()
+ * @param {{ entries?: Record<string, any[]> } | null} [input.dict]     词库（可选）
+ * @param {boolean} [input.markKnown] 是否连已掌握的词一起收
+ * @returns {Map<string, boolean>} 键 → 是否「已掌握」（true 时渲染淡色）
+ */
+    function expandWordSet(input) {
+      const out = new Map()
+      const entries = input?.entries
+      if (!entries) return out
+      const dict = input?.dict ?? null
+      const markKnown = input?.markKnown === true
+
+      for (const entry of entries) {
+        if (!entry || typeof entry !== 'object') continue
+        const head = normalizeKey(entry.head)
+        if (!head) continue
+        const known = entry.state === 'known'
+        if (known && !markKnown) continue
+        out.set(head, known)
+
+        const node = dict?.entries?.[head]
+        if (!Array.isArray(node)) continue
+        for (let i = 5; i < node.length; i += 1) {
+          const slot = node[i]
+          if (typeof slot !== 'string') continue
+          for (const part of slot.split('/')) {
+            const colon = part.indexOf(':')
+            if (colon <= 0) continue
+            const form = normalizeKey(part.slice(colon + 1))
+        // 变位表单里可能自带句尾标点，normalizeKey 只处理撇号与大小写，这里再裁一次
+            const trimmed = form.replace(/^[^a-z]+|[^a-z'-]+$/g, '')
+            if (!trimmed) continue
+        // 词头比变位优先：已知的词头不要被变位的淡色标记覆盖
+            if (out.has(trimmed) && !out.get(trimmed)) continue
+            out.set(trimmed, known)
+          }
+        }
+      }
+      return out
+    }
+
+/* ── C1.2 文本节点词匹配 ───────────────────────────────────────────── */
+
+/**
+ * 在一个文本节点的字符串里找出所有「在词集里」的词。
+ *
+ * 正则 `/[A-Za-z][A-Za-z'’-]{0,63}/g`，normalizeKey 后查 Set —— 大小写不敏感。
+ * 不处理词组、不做词形还原（变位已经在词集里了）。
+ *
+ * @param {string} text
+ * @param {Map<string, boolean> | Set<string>} keys
+ * @returns {Array<{ start: number, end: number, text: string, key: string, known: boolean }>}
+ */
+    function matchWordsInText(text, keys) {
+      const out = []
+      if (typeof text !== 'string' || text === '' || !keys) return out
+      const isMap = typeof keys.get === 'function'
+      const has = typeof keys.has === 'function'
+        ? (key) => keys.has(key)
+        : (key) => typeof keys[key] === 'boolean'
+
+      WORD_PATTERN.lastIndex = 0
+      let match = WORD_PATTERN.exec(text)
+      while (match !== null) {
+        const raw = match[0]
+    // 正则允许词尾是撇号/连字符（`don't` 的撇号在中间，`well-` 在词尾是断词），裁掉
+        const trimmed = raw.replace(/['’-]+$/, '')
+        if (trimmed.length >= 2) {
+          const key = normalizeKey(trimmed)
+          if (key && has(key)) {
+            out.push({
+              start: match.index,
+              end: match.index + trimmed.length,
+              text: trimmed,
+              key,
+              known: isMap ? keys.get(key) === true : false,
+            })
+          }
+        }
+        match = WORD_PATTERN.exec(text)
+      }
+      return out
+    }
+
+/* ── C1.3 视口裁剪与上限截断 ───────────────────────────────────────── */
+
+/**
+ * 只留与「视口 + 余量」相交的矩形。
+ *
+ * @param {MarkerRect[] | Array<{ rects?: MarkerRect[] }>} input
+ * @param {{ left: number, top: number, right: number, bottom: number } | { width: number, height: number }} viewport
+ * @param {number} [pad] 默认 ±200px
+ * @returns {MarkerRect[]}
+ */
+    function cullToViewport(input, viewport, pad) {
+      const list = Array.isArray(input) ? input : []
+      if (list.length === 0) return []
+      const margin = isNum(pad) ? pad : VIEWPORT_PAD_PX
+      const box = normalizeViewport(viewport, margin)
+      if (!box) return list.map(rectOf).filter(Boolean)
+      const out = []
+      for (const item of list) {
+        const rect = rectOf(item)
+        if (!rect) continue
+        if (rect.right < box.left || rect.left > box.right) continue
+        if (rect.bottom < box.top || rect.top > box.bottom) continue
+        out.push(rect)
+      }
+      return out
+    }
+
+/**
+ * 把视口形状统一成带余量的包围盒。接受 `{left,top,right,bottom}` 或 `{width,height}`。
+ *
+ * @param {object} viewport
+ * @param {number} pad
+ * @returns {{ left: number, top: number, right: number, bottom: number } | null}
+ */
+    function normalizeViewport(viewport, pad) {
+      const margin = isNum(pad) ? pad : VIEWPORT_PAD_PX
+      if (!viewport || typeof viewport !== 'object') return null
+      if ([viewport.left, viewport.top, viewport.right, viewport.bottom].every(isNum)) {
+        return {
+          left: viewport.left - margin,
+          top: viewport.top - margin,
+          right: viewport.right + margin,
+          bottom: viewport.bottom + margin,
+        }
+      }
+      if (isNum(viewport.width) && isNum(viewport.height)) {
+        return {
+          left: (isNum(viewport.scrollX) ? -viewport.scrollX : 0) - margin,
+          top: (isNum(viewport.scrollY) ? -viewport.scrollY : 0) - margin,
+          right: viewport.width - (isNum(viewport.scrollX) ? viewport.scrollX : 0) + margin,
+          bottom: viewport.height - (isNum(viewport.scrollY) ? viewport.scrollY : 0) + margin,
+        }
+      }
+      return null
+    }
+
+/**
+ * 从 document/window 读当前视口（真实运行环境用；测试里可直接传 viewport 对象）。
+ *
+ * @param {Document | null} doc
+ * @returns {{ left: number, top: number, right: number, bottom: number } | null}
+ */
+    function viewportOf(doc) {
+      const win = doc?.defaultView ?? (typeof window !== 'undefined' ? window : null)
+      if (!win || !isNum(win.innerWidth) || !isNum(win.innerHeight)) return null
+      return { left: 0, top: 0, right: win.innerWidth, bottom: win.innerHeight }
+    }
+
+/**
+ * 上限截断：色块数超过 `max` 时，按「距视口中心距离」从近到远取前 max 个。
+ *
+ * 为什么按中心距离而不是 DOM 顺序：用户眼睛盯着屏幕中间，先保中间的可读性；
+ * 一屏 400 个色块已经是失控状态（正常一屏几十个），保近处比保「文档前面」有用。
+ *
+ * @template {{ rects?: MarkerRect[], bounds?: MarkerRect | null }} T
+ * @param {T[]} marks
+ * @param {{ max?: number, viewport?: object | null }} [options]
+ * @returns {T[]}
+ */
+    function capMarks(marks, options) {
+      const list = Array.isArray(marks) ? marks : []
+      const max = isNum(options?.max) && options.max > 0 ? Math.floor(options.max) : MARK_MAX
+      if (list.length <= max) return list
+
+      const box = normalizeViewport(options?.viewport, 0)
+      const cx = box ? (box.left + box.right) / 2 : 0
+      const cy = box ? (box.top + box.bottom) / 2 : 0
+
+      const ranked = list.map((mark, index) => {
+        const bounds = rectOf(mark?.bounds) ?? unionRectsOf(mark?.rects ?? [])
+        if (!bounds) return { mark, index, distance: Infinity }
+        const dx = (bounds.left + bounds.right) / 2 - cx
+        const dy = (bounds.top + bounds.bottom) / 2 - cy
+        return { mark, index, distance: dx * dx + dy * dy }
+      })
+
+  // 同距离保持原顺序（稳定排序），否则滚动时色块会无规律跳动
+      ranked.sort((a, b) => (a.distance - b.distance) || (a.index - b.index))
+      return ranked.slice(0, max).sort((a, b) => a.index - b.index).map((row) => row.mark)
+    }
+
+/* ── C1.4 扫描器（TreeWalker） ─────────────────────────────────────── */
+
+/**
+ * 判定一个元素是不是「不许着色」的区域（复用 hit.js 的 HIT_BLOCKERS，不重写判定）。
+ *
+ * @param {Element | null} el
+ * @returns {{ blocked: boolean, reason: string }}
+ */
+    function blockerOf(el) {
+      if (!el || typeof el.closest !== 'function') return { blocked: false, reason: 'unknown' }
+      for (const blocker of HIT_BLOCKERS) {
+        let hit = false
+        try { hit = blocker.matches(el) === true } catch { hit = false }
+        if (hit) return { blocked: true, reason: blocker.reason }
+      }
+      return { blocked: false, reason: 'ok' }
+    }
+
+/**
+ * 收集一个根节点下的全部文本节点（文档顺序）。
+ *
+ * 优先用 `doc.createTreeWalker(root, NodeFilter.SHOW_TEXT)`；环境/测试桩没有它时
+ * 退化成递归遍历，结果顺序一致。**退化路径是给 node 单测用的**，真实浏览器永远走 TreeWalker。
+ *
+ * @param {Document | null} doc
+ * @param {Node | null} root
+ * @returns {Text[]}
+ */
+    function collectTextNodes(doc, root) {
+      if (!root) return []
+      const nodes = []
+      if (doc && typeof doc.createTreeWalker === 'function') {
+        let walker = null
+        try {
+          walker = doc.createTreeWalker(root, 4 /* NodeFilter.SHOW_TEXT */)
+        } catch {
+          walker = null
+        }
+        if (walker && typeof walker.nextNode === 'function') {
+          let node = walker.nextNode()
+          while (node) {
+            if (node.nodeType === 3) nodes.push(node)
+            node = walker.nextNode()
+          }
+          return nodes
+        }
+      }
+      const stack = [root]
+      while (stack.length > 0) {
+        const current = stack.pop()
+        const kids = current?.childNodes
+        if (!kids) continue
+        for (let i = kids.length - 1; i >= 0; i -= 1) {
+          const kid = kids[i]
+          if (!kid) continue
+          if (kid.nodeType === 3) nodes.push(kid)
+          else if (kid.childNodes) stack.push(kid)
+        }
+      }
+      return nodes
+    }
+
+/**
+ * 把 root 参数解析成根节点数组：选择器串 → 全部匹配；元素 → 单元素。
+ *
+ * @param {Document | null} doc
+ * @param {Node | Node[] | string | null} [root]
+ * @returns {Node[]}
+ */
+    function resolveRoots(doc, root) {
+      if (Array.isArray(root)) return root.filter(Boolean)
+      if (root === null || root === undefined) {
+        return collectBySelector(doc, SELECTORS.allowedRoot)
+      }
+      if (typeof root === 'string') return collectBySelector(doc, root)
+      if (typeof root === 'object') return [root]
+      return []
+    }
+
+    function collectBySelector(doc, selector) {
+      if (!doc || typeof doc.querySelectorAll !== 'function' || typeof selector !== 'string' || selector === '') return []
+      try {
+        return [...doc.querySelectorAll(selector)]
+      } catch {
+        return []
+      }
+    }
+
+/** 取文本节点的字符串内容（老环境与测试桩可能只有 data）。 */
+    function textOfNode(node) {
+      if (!node) return ''
+      if (typeof node.nodeValue === 'string') return node.nodeValue
+      if (typeof node.data === 'string') return node.data
+      return ''
+    }
+
+/**
+ * 扫描一遍：输入 doc + 根选择器 + 词集，输出命中区间列表。
+ *
+ * 排除（沿用 hit.js，不重写）：代码块、行内代码、公式、链接、用户消息、
+ * 工具调用卡片、输入框、本插件自己的覆盖层 —— 最后的 `[data-hover-dict-ui]`
+ * 顺带保证色块自己不会被再扫一遍（否则会无限套娃）。
+ *
+ * @param {object} input
+ * @param {Document | null} input.doc
+ * @param {Node | Node[] | string | null} [input.root] 省略时用 SELECTORS.allowedRoot
+ * @param {Map<string, boolean> | Set<string>} input.keys
+ * @param {boolean} [input.think] 是否把 `think: true` 标在命中上（思考区判定）
+ * @returns {MarkerHit[]}
+ */
+    function scanTextNodes(input) {
+      const doc = input?.doc ?? null
+      const keys = input?.keys
+      const out = []
+      if (!keys || typeof keys.has !== 'function') return out
+      if (typeof keys.size === 'number' && keys.size === 0) return out
+
+      const roots = resolveRoots(doc, input?.root)
+      if (roots.length === 0) return out
+
+      for (const root of roots) {
+        for (const node of collectTextNodes(doc, root)) {
+          const text = textOfNode(node)
+          if (text === '') continue
+          const parent = node.parentElement ?? node.parentNode ?? null
+          if (parent && blockerOf(parent).blocked) continue
+          const matches = matchWordsInText(text, keys)
+          if (matches.length === 0) continue
+          const inThink = typeof parent?.closest === 'function' && parent.closest(THINK_SELECTOR) !== null
+          for (const match of matches) {
+            out.push({
+              node,
+              start: match.start,
+              end: match.end,
+              text: match.text,
+              key: match.key,
+          // known 来自词集的值（matchWordsInText 已经从 Map 取出来了）。
+          // 之前这里漏传，导致 Highlight 主路径没法把「已掌握」单独分桶。
+              known: match.known === true,
+              think: inThink,
+            })
+          }
+        }
+      }
+      return out
+    }
+
+/* ── 量矩形（只读，不改 DOM） ──────────────────────────────────────── */
+
+/**
+ * 把命中区间量成视口矩形。跨行时一个命中会有多段，**逐段保留**。
+ *
+ * @param {MarkerHit[]} hits
+ * @param {{ doc?: Document | null }} [options]
+ * @returns {MarkerMark[]}
+ */
+    function measureHits(hits, options) {
+      const list = Array.isArray(hits) ? hits : []
+      const out = []
+      if (list.length === 0) return out
+      const doc = options?.doc ?? (typeof document !== 'undefined' ? document : null)
+      if (!doc || typeof doc.createRange !== 'function') return out
+
+      for (const hit of list) {
+        const node = hit?.node
+        if (!node || typeof node.nodeType !== 'number') continue
+        let range = null
+        try {
+          range = doc.createRange()
+          range.setStart(node, hit.start)
+          range.setEnd(node, hit.end)
+        } catch {
+      // 节点已脱离文档 / 偏移越界：跳过，不抛
+          continue
+        }
+        let raw = []
+        try {
+          raw = range.getClientRects ? [...range.getClientRects()] : []
+        } catch {
+          raw = []
+        }
+        const rects = []
+        for (const item of raw) {
+          const rect = rectOf(item)
+      // 换行处的空 Range 会给出 0 宽/0 高矩形，画出来是脏点
+          if (!rect || rect.width <= 0 || rect.height <= 0) continue
+          rects.push(rect)
+        }
+        if (rects.length === 0) continue
+    // rangeRefs 与 rects **等长**：跨行时一个命中对应 N 段矩形，而它们全部来自
+    // 同一个 Range。所以 refs 里是同一条 {node,start,end} 重复 N 次 —— 形状上
+    // 满足「一一对应」（快路径按下标取 div 时不用再算映射），语义上快路径必须
+    // **按 mark 去重**只量一次，否则 224 块会变成 224 次重复 layout。
+        const rangeRef = { node, start: hit.start, end: hit.end }
+        const rangeRefs = new Array(rects.length)
+        for (let i = 0; i < rects.length; i += 1) rangeRefs[i] = rangeRef
+        out.push({
+          key: hit.key,
+          text: hit.text,
+          think: hit.think === true,
+          known: hit.known === true,
+          rects,
+          rangeRefs,
+          bounds: unionRectsOf(rects),
+        })
+      }
+      return out
+    }
+
+/**
+ * 一次完整重算的纯函数流水线：扫描 → 量矩形 → 视口裁剪 → 上限截断。
+ *
+ * 生词本变化、滚动、resize、DOM 变化最终都调这一个函数；它不做渲染，
+ * 只交出「这一帧该画哪些色块」。色块为空数组时调用方应直接清空覆盖层并返回。
+ *
+ * @param {object} input
+ * @param {Document | null} input.doc
+ * @param {Node | Node[] | string | null} [input.root]
+ * @param {Map<string, boolean> | Set<string>} input.keys
+ * @param {object} [input.viewport] 省略时从 doc.defaultView 读
+ * @param {number} [input.pad] 视口余量
+ * @param {number} [input.max] 上限
+ * @returns {MarkerMark[]}
+ */
+    function buildMarks(input) {
+      const doc = input?.doc ?? null
+      const keys = input?.keys
+      if (!keys || typeof keys.has !== 'function') return []
+      if (typeof keys.size === 'number' && keys.size === 0) return []
+
+      const hits = scanTextNodes({ doc, root: input?.root, keys })
+      if (hits.length === 0) return []
+
+      const marks = measureHits(hits, { doc })
+      if (marks.length === 0) return []
+
+      const viewport = input?.viewport ?? viewportOf(doc)
+      const pad = isNum(input?.pad) ? input.pad : VIEWPORT_PAD_PX
+      const marksWithPad = viewport
+        ? marks
+          .map((mark) => {
+        // 裁剪要同时保留「留下来的段」对应的 rangeRefs 下标，否则快路径
+        // 按下标写样式会写到别的段上（§C2.3 裁剪 + 快路径必须共用同一套下标）。
+            const kept = []
+            const keptRefs = []
+            const source = Array.isArray(mark.rects) ? mark.rects : []
+            const refs = Array.isArray(mark.rangeRefs) ? mark.rangeRefs : []
+            const box = normalizeViewport(viewport, pad)
+            for (let i = 0; i < source.length; i += 1) {
+              const rect = rectOf(source[i])
+              if (!rect) continue
+              if (box && (rect.right < box.left || rect.left > box.right
+                || rect.bottom < box.top || rect.top > box.bottom)) continue
+              kept.push(rect)
+              keptRefs.push(refs[i] ?? refs[0] ?? { node: null, start: 0, end: 0 })
+            }
+            if (kept.length === 0) return null
+            return { ...mark, rects: kept, rangeRefs: keptRefs, bounds: unionRectsOf(kept) }
+          })
+          .filter(Boolean)
+        : marks
+
+      return capMarks(marksWithPad, { max: input?.max, viewport })
+    }
+
+/* ── C1.5 重算调度器（纯逻辑，时钟可注入） ─────────────────────────── */
+
+/**
+ * 重算调度器：把三类触发源（滚动 / DOM 变化 / resize）合并成低频重算。
+ *
+ * 规则（设计 §C2.4）：
+ *   - 滚动：节流 120ms —— 首次立即重算，窗口内后续只挂一个尾随调用；
+ *   - 正文变化：防抖 250ms —— 每次调用都把计时器往后推，静默满 250ms 才跑
+ *     （流式输出期间自然合并成低频重算）；
+ *   - resize：立即重算，并取消挂起的尾随/防抖（尺寸变了，之前算的都作废）。
+ *
+ * 时钟与计时器可注入，所以 `_marker.mjs` 用假时钟就能把节流/防抖的时序断言干净。
+ *
+ * @param {object} options
+ * @param {() => void} options.run 重算动作
+ * @param {() => number} [options.now]
+ * @param {(fn: () => void, ms: number) => any} [options.setTimeout]
+ * @param {(handle: any) => void} [options.clearTimeout]
+ * @param {number} [options.scrollThrottleMs]
+ * @param {number} [options.mutationDebounceMs]
+ * @returns {{
+ *   scroll: () => void, mutate: () => void, resize: () => void,
+ *   request: () => void, cancel: () => void, dispose: () => void,
+ *   pending: () => { throttle: boolean, debounce: boolean },
+ *   runs: () => number, lastRunAt: () => number
+ * }}
+ */
+    function createRecalcScheduler(options) {
+      const run = typeof options?.run === 'function' ? options.run : () => {}
+      const now = typeof options?.now === 'function' ? options.now : Date.now
+      const setT = typeof options?.setTimeout === 'function' ? options.setTimeout : (fn, ms) => setTimeout(fn, ms)
+      const clearT = typeof options?.clearTimeout === 'function' ? options.clearTimeout : (handle) => clearTimeout(handle)
+      const throttleMs = isNum(options?.scrollThrottleMs) ? options.scrollThrottleMs : SCROLL_THROTTLE_MS
+      const debounceMs = isNum(options?.mutationDebounceMs) ? options.mutationDebounceMs : MUTATION_DEBOUNCE_MS
+
+      let lastRunAt = -Infinity
+      let throttleTimer = null
+      let debounceTimer = null
+      let disposed = false
+      let runs = 0
+
+      const fire = () => {
+        if (disposed) return
+        lastRunAt = now()
+        runs += 1
+        try { run() } catch { /* 重算失败不该让监听器连锁崩溃 */ }
+      }
+
+      const clearThrottle = () => {
+        if (throttleTimer === null) return
+        try { clearT(throttleTimer) } catch { /* ignore */ }
+        throttleTimer = null
+      }
+
+      const clearDebounce = () => {
+        if (debounceTimer === null) return
+        try { clearT(debounceTimer) } catch { /* ignore */ }
+        debounceTimer = null
+      }
+
+      const scroll = () => {
+        if (disposed) return
+        const elapsed = now() - lastRunAt
+        if (elapsed >= throttleMs) {
+          clearThrottle()
+          fire()
+          return
+        }
+    // 窗口内：只挂一个尾随调用，后续 scroll 不再叠加
+        if (throttleTimer !== null) return
+        throttleTimer = setT(() => {
+          throttleTimer = null
+          fire()
+        }, Math.max(0, throttleMs - elapsed))
+      }
+
+      const mutate = () => {
+        if (disposed) return
+        clearDebounce()
+        debounceTimer = setT(() => {
+          debounceTimer = null
+          fire()
+        }, debounceMs)
+      }
+
+      const resize = () => {
+        if (disposed) return
+    // 尺寸变了，挂起的滚动尾随与防抖都已过期
+        clearThrottle()
+        clearDebounce()
+        fire()
+      }
+
+      const cancel = () => {
+        clearThrottle()
+        clearDebounce()
+      }
+
+      return {
+        scroll,
+        mutate,
+        resize,
+        request: fire,
+        cancel,
+        dispose: () => { disposed = true; cancel() },
+        pending: () => ({ throttle: throttleTimer !== null, debounce: debounceTimer !== null }),
+        runs: () => runs,
+        lastRunAt: () => lastRunAt,
+      }
+    }
+
+/**
+ * 把调度器接到真实 DOM 事件上。**只挂监听，不写 DOM**。
+ *
+ * @param {object} input
+ * @param {Document | null} input.doc
+ * @param {ReturnType<typeof createRecalcScheduler>} input.scheduler
+ * @param {{ addEventListener?: Function, removeEventListener?: Function } | null} [input.win]
+ * @returns {() => void} disposer
+ */
+    function bindRecalcEvents(input) {
+      const doc = input?.doc ?? null
+      const scheduler = input?.scheduler
+      const win = input?.win ?? doc?.defaultView ?? null
+      if (!scheduler) return () => {}
+      const pairs = []
+      const on = (target, type, handler, opts) => {
+        if (!target || typeof target.addEventListener !== 'function') return
+        try { target.addEventListener(type, handler, opts) } catch { return }
+        pairs.push([target, type, handler, opts])
+      }
+
+  // 滚动用 capture：程序滚动（流式输出跟随）也要能触发重算。
+  //
+  // 走 Highlight 主路径时纯滚动**不需要**重算（字色跟文字走），这里保留节流重算
+  // 只是为了兜住「滚动推出新一批文本节点」（虚拟列表）与 resize 后的换行变化。
+      on(win, 'scroll', () => scheduler.scroll(), { capture: true, passive: true })
+      on(win, 'resize', () => scheduler.resize(), { passive: true })
+
+  // MutationObserver：流式输出期间靠 250ms 防抖合并（§G：不许更激进）。
+  //
+  // 观察目标先取 chatRegion。**拿不到就退到 documentElement 整棵观察** ——
+  // apply 跑的时候会话区往往还没渲染出来（用户还没发第一句话），
+  // 只挂 chatRegion 会让 observer 永久挂空，流式输出反而不会触发重算。
+  // 整棵观察的成本由 250ms 防抖吸收：一帧内再多的变动也只排一次重算。
+      let observer = null
+      const observe = (target) => {
+        if (!target || typeof MutationObserver !== 'function') return false
+        const next = new MutationObserver(() => scheduler.mutate())
+        try {
+          next.observe(target, { childList: true, subtree: true, characterData: true })
+        } catch {
+          return false
+        }
+        observer = next
+        return true
+      }
+      if (doc && typeof doc.querySelector === 'function') {
+        const region = doc.querySelector(SELECTORS.chatRegion)
+        const target = region ?? doc.documentElement ?? doc.body ?? null
+        observe(target)
+      }
+
+      return () => {
+        for (const [target, type, handler, opts] of pairs) {
+          try { target.removeEventListener(type, handler, opts) } catch { /* ignore */ }
+        }
+        pairs.length = 0
+        try { observer?.disconnect() } catch { /* ignore */ }
+        observer = null
+      }
+    }
+
+/* ── C2 画法：色块样式与渲染组件 ───────────────────────────────────── */
+
+/**
+ * 用户色 → `color-mix()` 表达式。亮/暗主题都不发黑（设计 §C2.2 否掉了 multiply）。
+ *
+ * @param {string} color hex
+ * @param {number} percent 底色浓度
+ * @param {number} alpha 额外透明度（已掌握词用 0.5）
+ * @returns {string}
+ */
+    function colorMix(color, percent, alpha) {
+  // 走 markColorToCss：它把 theme-error 哨兵翻成 var(...) 并带 hex 兜底，
+  // 坏值也回落同一个 token —— 所以这里永远拿到一个合法的 CSS 颜色分量
+  // （color-mix 支持 var() 参与求值）。
+      const css = markColorToCss(color)
+      const ratio = isNum(percent) ? Math.min(Math.max(percent, 0), 100) : 18
+      const fade = isNum(alpha) ? Math.min(Math.max(alpha, 0), 1) : 1
+      const value = fade >= 1
+        ? `color-mix(in srgb, ${css} ${ratio}%, transparent)`
+        : `color-mix(in srgb, ${css} ${Math.round(ratio * fade)}%, transparent)`
+      return value
+    }
+
+/**
+ * 一个色块的内联样式。三种 markStyle（设计 §C4）：
+ *   underline  半透明底色 + 1.5px 下划线（默认）
+ *   background 仅底色
+ *   text       仅下划线
+ *
+ * 文字颜色不动 —— 改不了正文，垫底 + 下划线足够醒目。
+ *
+ * @param {MarkerRect} rect
+ * @param {{ known?: boolean }} [mark]
+ * @param {{ markColor?: string, markStyle?: string, markKnown?: boolean }} [appearance]
+ * @returns {object}
+ */
+    function styleOfMark(rect, mark, appearance) {
+      const box = rectOf(rect)
+      if (!box) return { display: 'none' }
+      const color = typeof appearance?.markColor === 'string' ? appearance.markColor : DEFAULT_MARK_COLOR
+      const style = MARK_STYLES.includes(appearance?.markStyle) ? appearance.markStyle : 'underline'
+      const known = mark?.known === true
+      const base = {
+        position: 'fixed',
+        left: `${box.left}px`,
+        top: `${box.top}px`,
+        width: `${box.width}px`,
+        height: `${box.height}px`,
+        pointerEvents: 'none',
+        borderRadius: '2px',
+    // 色块本身不许被选中、不许被查词扫描到（覆盖层带 data-hover-dict-ui）
+        userSelect: 'none',
+      }
+      if (known) base.opacity = 0.5
+      if (style === 'background') {
+        base.background = colorMix(color, 26, known ? 0.6 : 1)
+        return base
+      }
+      if (style === 'text') {
+        base.borderBottom = `1.5px solid ${color}`
+        return base
+      }
+      base.background = colorMix(color, 18, known ? 0.6 : 1)
+      base.borderBottom = `1.5px solid ${color}`
+      return base
+    }
+
+/**
+ * 色块层组件：渲染进 `shell.overlay`，与浮层/大卡片是兄弟，key 用 'markers'。
+ *
+ * 组件只画**已经算好**的色块（几何由 buildMarks 给），自身不扫描、不监听事件 ——
+ * 监听与重算在 app.js 的接线里（t8），这样渲染路径永远没有重活，不会拖帧。
+ *
+ * `h` 由构建前导注入；本组件在 node 单测里不会被调用。
+ *
+ * @param {object} props
+ * @param {MarkerMark[]} props.marks
+ * @param {{ markColor?: string, markStyle?: string, markKnown?: boolean, markWords?: boolean }} [props.appearance]
+ * @returns {import('react').ReactElement | null}
+ */
+    function MarkerLayer(props) {
+      const appearance = props?.appearance
+      if (appearance?.markWords === false) return null
+      const marks = Array.isArray(props?.marks) ? props.marks : []
+      if (marks.length === 0) return null
+
+      const children = []
+      for (let i = 0; i < marks.length; i += 1) {
+        const mark = marks[i]
+        const rects = Array.isArray(mark?.rects) ? mark.rects : []
+        for (let j = 0; j < rects.length; j += 1) {
+          children.push(h('div', {
+            key: `${i}:${j}`,
+            className: 'hd-mark',
+        // 快路径靠它按 id 找到 div 直接改 style（不走 React）。格式 `${markIndex}:${rectIndex}`
+        // 与 buildMarks 输出的 marks[i].rects[j] 一一对应。
+            'data-mark-id': `${i}:${j}`,
+            style: styleOfMark(rects[j], mark, appearance),
+          }))
+        }
+      }
+      if (children.length === 0) return null
+      return h('div', { className: 'hd-marks', 'aria-hidden': 'true' }, children)
+    }
+
+/**
+ * MarkerLayer 用到的 CSS 片段。由 overlay.js 的 ensureStyle 一并注入
+ * （t3b 接线时追加，或调用这里的 markCss() 拼进去）。
+ *
+ * @returns {string}
+ */
+    function markCss() {
+      return `
+    [data-hover-dict-ui] .hd-marks {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      contain: layout style;
+      z-index: 0;
+    }
+    [data-hover-dict-ui] .hd-mark {
+      position: fixed;
+      pointer-events: none;
+    }
+    `
+    }
+/* ── C2 主路径：CSS Custom Highlight API（用户裁定：只要改字的颜色） ─────────
+ *
+ * 用户原话：「我们不需要下划线和色块啊，只要改字的颜色即可。」
+ *
+ * Highlight API 是浏览器原生能力：`CSS.highlights.set(name, new Highlight(...ranges))`
+ * 就能给指定文字区间上**文字颜色**，**完全不改正文 DOM**（不包 span、不加属性），
+ * 所以「不改正文 DOM」那条红线天然守住。
+ *
+ * 它的另一个决定性好处：颜色是浏览器渲染时跟着文字走的，文字滚到哪颜色就到哪 ——
+ * 之前「滚动时色块不跟字」的偏移问题**从根上不存在**，不需要 rAF 逐帧重测。
+ *
+ * 下面这套函数只在环境支持时启用；不支持（老浏览器/测试桩）就回退到色块方案
+ * （buildMarks + MarkerLayer，仍在文件后半部分保留）。
+ */
+
+/**
+ * 判断当前环境能不能用 Highlight API。
+ *
+ * 两条都要：`Highlight` 构造函数存在，且 `CSS.highlights`（HighlightRegistry）可用。
+ * 缺一就回退 —— 只判其中一个会在某些实现里抛 TypeError。
+ *
+ * @param {object} [scope] 通常传 window/globalThis，单测可注入假对象
+ * @returns {boolean}
+ */
+    function supportsHighlight(scope) {
+      const host = scope ?? (typeof globalThis !== 'undefined' ? globalThis : undefined)
+      if (!host) return false
+      if (typeof host.Highlight !== 'function') return false
+      const css = host.CSS
+      if (!css || typeof css !== 'object') return false
+      const registry = css.highlights
+      if (!registry || typeof registry.set !== 'function') return false
+      return true
+    }
+
+/**
+ * 用户配置的 markColor → CSS 颜色值。
+ *
+ * - `theme-error` 哨兵 → `var(--dsw-alias-state-error-primary, #e5484d)`
+ *   （带 hex 兜底：token 缺失时仍是可见的红，不会变成继承色）
+ * - 合法 hex → 原样（小写归一）
+ * - 其它 → 回落 theme-error 的 token
+ *
+ * @param {string} [color]
+ * @returns {string}
+ */
+    function markColorToCss(color) {
+      const raw = typeof color === 'string' ? color.trim() : ''
+      if (/^#[0-9a-f]{6}$/i.test(raw)) return raw.toLowerCase()
+      return 'var(--dsw-alias-state-error-primary, #e5484d)'
+    }
+
+/**
+ * 把命中区间变成 Range 列表。**不量矩形、不裁剪视口** ——
+ * Highlight 不需要坐标，浏览器自己知道这些 range 在屏幕上的位置。
+ *
+ * 每个命中一个 Range（setStart/setEnd 到文本节点的字符偏移）。
+ * 已经脱离文档的节点跳过（量不出也没意义）。
+ *
+ * @param {object} input
+ * @param {Document | null} input.doc
+ * @param {Node | Node[] | string | null} [input.root] 省略时用 SELECTORS.allowedRoot
+ * @param {Map<string, boolean> | Set<string>} input.keys
+ * @returns {{
+ *   ranges: Range[],
+ *   knownRanges: Range[],
+ *   rangeRefs: Array<{ node: Text, start: number, end: number, key: string, known: boolean, think: boolean }>,
+ *   stats: { hits: number, words: number, known: number, skipped: number }
+ * }}
+ */
+    function buildHighlightRanges(input) {
+      const doc = input?.doc ?? null
+      const keys = input?.keys
+      const empty = { ranges: [], knownRanges: [], rangeRefs: [], stats: { hits: 0, words: 0, known: 0, skipped: 0 } }
+      if (!doc || !keys || typeof keys.has !== 'function') return empty
+      if (typeof keys.size === 'number' && keys.size === 0) return empty
+
+      const hits = scanTextNodes({ doc, root: input?.root, keys })
+      if (hits.length === 0) return empty
+
+      const ranges = []
+      const knownRanges = []
+      const rangeRefs = []
+      let skipped = 0
+
+      for (const hit of hits) {
+        const node = hit?.node
+        if (!node || typeof node.nodeType !== 'number') { skipped += 1; continue }
+    // 已脱离文档的节点建 Range 会抛；直接跳过（下一轮慢路径会重扫）
+        if (typeof node.isConnected === 'boolean' && node.isConnected === false) { skipped += 1; continue }
+        let range = null
+        try {
+          range = doc.createRange()
+          range.setStart(node, hit.start)
+          range.setEnd(node, hit.end)
+        } catch {
+          skipped += 1
+          continue
+        }
+        const known = hit.known === true
+        if (known) knownRanges.push(range)
+        else ranges.push(range)
+        rangeRefs.push({
+          node, start: hit.start, end: hit.end, key: hit.key, known, think: hit.think === true,
+        })
+      }
+
+      return {
+        ranges,
+        knownRanges,
+        rangeRefs,
+        stats: {
+          hits: hits.length,
+          words: ranges.length,
+          known: knownRanges.length,
+          skipped,
+        },
+      }
+    }
+
+/**
+ * 把 ranges 注册进 CSS.highlights。
+ *
+ * 空数组时**删除**对应注册（否则上一轮的旧高亮会留在正文上）。
+ * 注册失败（环境半支持、Highlight 构造抛错）返回 false，调用方据此回退色块路径。
+ *
+ * @param {object} input
+ * @param {object} [input.scope] window/globalThis，单测可注入
+ * @param {Range[]} [input.ranges]
+ * @param {Range[]} [input.knownRanges]
+ * @returns {{ ok: boolean, words: number, known: number, error?: string }}
+ */
+    function applyHighlights(input) {
+      const scope = input?.scope ?? (typeof globalThis !== 'undefined' ? globalThis : undefined)
+      const ranges = Array.isArray(input?.ranges) ? input.ranges : []
+      const knownRanges = Array.isArray(input?.knownRanges) ? input.knownRanges : []
+      if (!supportsHighlight(scope)) return { ok: false, words: 0, known: 0, error: 'unsupported' }
+
+      const registry = scope.CSS.highlights
+      const HighlightCtor = scope.Highlight
+      try {
+        if (ranges.length === 0) registry.delete(HIGHLIGHT_WORDS)
+        else registry.set(HIGHLIGHT_WORDS, new HighlightCtor(...ranges))
+
+        if (knownRanges.length === 0) registry.delete(HIGHLIGHT_KNOWN)
+        else registry.set(HIGHLIGHT_KNOWN, new HighlightCtor(...knownRanges))
+
+        return { ok: true, words: ranges.length, known: knownRanges.length }
+      } catch (error) {
+        return { ok: false, words: 0, known: 0, error: error?.message ?? 'failed' }
+      }
+    }
+
+/**
+ * 清掉本插件注册的两个 highlight（关闭着色 / 卸载时调）。
+ *
+ * @param {object} [scope]
+ * @returns {void}
+ */
+    function clearHighlights(scope) {
+      const host = scope ?? (typeof globalThis !== 'undefined' ? globalThis : undefined)
+      const registry = host?.CSS?.highlights
+      if (!registry || typeof registry.delete !== 'function') return
+      try { registry.delete(HIGHLIGHT_WORDS) } catch { /* ignore */ }
+      try { registry.delete(HIGHLIGHT_KNOWN) } catch { /* ignore */ }
+    }
+
+/**
+ * 生成 `::highlight(...)` 规则。
+ *
+ * **只写 color**：用户要的是「改字的颜色」，不要 background / border / text-decoration。
+ * 已掌握词用淡化（`color-mix` 把同色掺到 transparent）而不是换色 —— 保持同源。
+ *
+ * 注意 ::highlight 是伪元素，可用的属性很少（color、background-color、
+ * text-decoration、text-shadow 等），正因为少，这里只给 color 最稳。
+ *
+ * @param {object} [appearance]
+ * @param {{ markColor?: string, markKnown?: boolean }} [appearance]
+ * @returns {string}
+ */
+    function highlightCss(appearance) {
+      const color = markColorToCss(appearance?.markColor)
+      const knownOn = appearance?.markKnown === true
+      const parts = [
+        `::highlight(${HIGHLIGHT_WORDS}) { color: ${color}; }`,
+      ]
+      if (knownOn) {
+    // 已掌握：同色但对半掺透明，淡一档。theme-error 是 var() 时同样成立
+    // （color-mix 支持把 var() 当颜色分量求值）。
+        parts.push(`::highlight(${HIGHLIGHT_KNOWN}) { color: color-mix(in srgb, ${color} 50%, transparent); }`)
+      } else {
+    // 没开「已掌握也显示」就不注册规则（清掉残留）
+        parts.push(`::highlight(${HIGHLIGHT_KNOWN}) { }`)
+      }
+      return parts.join('\n')
+    }
+
+      return { HIGHLIGHT_WORDS, HIGHLIGHT_KNOWN, MARK_MAX, VIEWPORT_PAD_PX, SCROLL_THROTTLE_MS, MUTATION_DEBOUNCE_MS, THINK_SELECTOR, WORD_PATTERN, unionRectsOf, expandWordSet, matchWordsInText, cullToViewport, normalizeViewport, viewportOf, capMarks, blockerOf, collectTextNodes, resolveRoots, textOfNode, scanTextNodes, measureHits, buildMarks, createRecalcScheduler, bindRecalcEvents, colorMix, styleOfMark, MarkerLayer, markCss, supportsHighlight, markColorToCss, buildHighlightRanges, applyHighlights, clearHighlights, highlightCss }
     })()
 
     // ═══ anchor.js ═══
@@ -2473,6 +5034,7 @@ window.__ModuleLoader__.load({
 
     // ═══ overlay.js ═══
     var __mod_overlay = (function () {
+      var { highlightCss, MarkerLayer } = __mod_marker
 /**
  * overlay.js —— 覆盖层：单词高亮框 + 小浮层。
  *
@@ -2487,11 +5049,26 @@ window.__ModuleLoader__.load({
  * 样式全部走 `--dsw-alias-*` 语义 token，不写死颜色，不自己判断暗色主题。
  */
 
+
 /** 覆盖层根节点的标记属性。hit.js 靠它排除「自己身上的字」。 */
     const UI_ATTR = 'data-hover-dict-ui'
 
 /** 样式节点的稳定 id。改样式内容不需要改它。 */
     const STYLE_ID = 'dsh-hover-dict/styles'
+
+/**
+ * 生词状态的短标签与色点（设计 §A2 四态）。
+ *
+ * 放在 overlay 而不是 wordbook：这是**展示层**映射，与数据层无关，
+ * 而且浮层与色块共用同一套色（unknown 红 / fuzzy 橙 / known 绿）。
+ */
+    const WORD_STATE_LABELS = { new: '未学', unknown: '不认识', fuzzy: '记错', known: '已掌握' }
+    const WORD_STATE_TONES = {
+      new: 'var(--dsw-alias-label-secondary, #666)',
+      unknown: 'var(--dsw-alias-state-error-primary, #e5484d)',
+      fuzzy: 'var(--dsw-alias-state-warn-primary, #f0a441)',
+      known: 'var(--dsw-alias-state-success-primary, #2f9e44)',
+    }
 
 /** 卡片与浮层的基础样式。全部用宿主主题 token。 */
     const CSS = `
@@ -2695,6 +5272,36 @@ window.__ModuleLoader__.load({
       font-weight: 600;
       color: var(--dsw-alias-brand-primary, inherit);
     }
+/* ── 生词着色层（设计-v2 §C2.2）：垫在正文文字底下的色块 ──
+   pointer-events:none 让点击穿透到正文，现有的单击取词不受影响（§C3）。
+   z-index:0 让它在浮层（.hd-pop/.hd-card 各自定位）之下。
+   底色浓度与下划线由 marker.js 的 styleOfMark 逐块内联给出（用户自选色是唯一例外）。 */
+    [${UI_ATTR}] .hd-marks {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      contain: layout style;
+      z-index: 0;
+    }
+    [${UI_ATTR}] .hd-mark {
+      position: fixed;
+      pointer-events: none;
+    }
+/* 浮层里的「已在生词本 · 状态」小字行（§C3） */
+    [${UI_ATTR}] .hd-state {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: .86em;
+      line-height: 1.4;
+      color: var(--dsw-alias-label-secondary, #666);
+    }
+    [${UI_ATTR}] .hd-state-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex: none;
+    }
     `
 
 /**
@@ -2706,19 +5313,22 @@ window.__ModuleLoader__.load({
  * @param {Document} doc
  * @returns {() => void} disposer，卸载时移除这个 style 节点
  */
-    function ensureStyle(doc) {
+    function ensureStyle(doc, appearance) {
       if (!doc || typeof doc.createElement !== 'function') return () => {}
+  // ::highlight 的 color 由用户配置决定，所以整份样式内容包含它。
+  // 改色时 ensureStyle 会被重新调用（内容变了就替换 textContent），即时生效。
+      const css = `${CSS}\n${highlightCss(appearance ?? {})}\n`
       const selector = `style[data-plugin-css=${JSON.stringify(STYLE_ID)}]`
       let node = doc.querySelector(selector)
       if (node === null) {
         node = doc.createElement('style')
         node.dataset.pluginCss = STYLE_ID
-        node.textContent = CSS
+        node.textContent = css
         const head = doc.head ?? doc.documentElement
         if (head) head.appendChild(node)
         else return () => {}
-      } else if (node.textContent !== CSS) {
-        node.textContent = CSS
+      } else if (node.textContent !== css) {
+        node.textContent = css
       }
       return () => {
         try {
@@ -2727,6 +5337,27 @@ window.__ModuleLoader__.load({
       // 节点已经被宿主清掉了，无事可做
         }
       }
+    }
+
+/**
+ * 生词着色层宿主：把 marker.js 的 MarkerLayer 包一层，做两件事：
+ *   - `markWords === false` 时**整个不渲染**（用户要求的「直接不变颜色」）；
+ *   - 保证它排在 OverlayHost children 的**第一个**，画在浮层/卡片之下（§C2.2 z-index）。
+ *
+ * 真正的色块几何由 app.js 的 buildMarks 算好传进来 —— 这个组件不扫描、不监听、不量矩形，
+ * 渲染路径上没有任何重活，所以不会拖帧也不会有抛错风险。
+ *
+ * @param {object} props
+ * @param {Array<object>} props.marks
+ * @param {object} [props.appearance]
+ * @returns {import('react').ReactElement | null}
+ */
+    function MarkerLayerHost(props) {
+      const appearance = props?.appearance
+      if (!appearance || appearance.markWords === false) return null
+      const marks = Array.isArray(props?.marks) ? props.marks : []
+      if (marks.length === 0) return null
+      return h(MarkerLayer, { marks, appearance })
     }
 
 /**
@@ -2777,6 +5408,19 @@ window.__ModuleLoader__.load({
         ))
       }
       if (hasMore) children.push(h('div', { key: 'more', className: 'hd-more' }, '点击查看完整词条'))
+
+  // 「已在生词本 · 状态」小字行（设计 §C3）：点中被着色的词时，
+  // 用户需要知道「这个词我标成什么了」，否则红色色块等于没有解释。
+      if (inBook) {
+        const entry = props.entry
+        const state = typeof entry?.state === 'string' ? entry.state : ''
+        const label = WORD_STATE_LABELS[state] ?? ''
+        const tone = WORD_STATE_TONES[state] ?? 'var(--dsw-alias-label-secondary, #666)'
+        children.push(h('div', { key: 'state', className: 'hd-state' },
+          h('span', { className: 'hd-state-dot', style: { background: tone } }),
+          h('span', null, label ? `已在生词本 · ${label}` : '已在生词本'),
+        ))
+      }
 
       const tags = Array.isArray(brief.tags) && appearance?.showTags !== false
         ? brief.tags.map((tag) => h('span', { key: tag, className: 'hd-tag' }, tagLabel ? tagLabel(tag) : tag))
@@ -2887,7 +5531,7 @@ window.__ModuleLoader__.load({
       }, children)
     }
 
-      return { UI_ATTR, ensureStyle, PopoverBody, StatusNote, PhraseBody }
+      return { UI_ATTR, ensureStyle, MarkerLayerHost, PopoverBody, StatusNote, PhraseBody }
     })()
 
     // ═══ drag.js ═══
@@ -3576,6 +6220,260 @@ window.__ModuleLoader__.load({
     }
 
 /**
+ * 顶部页签导航。
+ *
+ * 为什么是 tab 而不是左侧竖排：宿主给设置页的宽度不定，竖排会在窄容器里
+ * 把内容区挤成一条。横排 tab 在窄容器里可以横向滚动，永远不会挤坏正文。
+ *
+ * @param {object} props
+ * @param {Array<{ id: string, label: string, badge?: string }>} props.items
+ * @param {string} props.value 当前选中的 id
+ * @param {(id: string) => void} props.onChange
+ * @returns {import('react').ReactElement}
+ */
+      function Tabs(props) {
+      const items = Array.isArray(props.items) ? props.items : []
+      return h('div', {
+        role: 'tablist',
+        'aria-label': props.label,
+        style: {
+          display: 'flex',
+          gap: 4,
+          flexWrap: 'wrap',
+          padding: 4,
+          borderRadius: RADIUS.md + 1,
+          border: `1px solid ${C.border1}`,
+          background: C.bg1,
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
+        },
+      }, items.map((item) => {
+        const active = item.id === props.value
+        return h('button', {
+          key: item.id,
+          type: 'button',
+          role: 'tab',
+          'aria-selected': active ? 'true' : 'false',
+          onClick: () => props.onChange(item.id),
+          style: {
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: GAP.xs,
+            padding: '6px 14px',
+            borderRadius: RADIUS.sm,
+            border: `1px solid ${active ? C.border2 : 'transparent'}`,
+            background: active ? C.bg2 : 'transparent',
+            boxShadow: active ? 'inset 0 1px 0 rgba(255,255,255,0.09)' : 'none',
+            color: active ? C.text : C.textDim,
+            font: 'inherit',
+            fontSize: FS.body,
+            fontWeight: active ? 650 : 520,
+            lineHeight: 1.6,
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+            transition: `background .18s ${EASE.out}, color .18s ${EASE.out}, border-color .18s ${EASE.out}`,
+            WebkitTapHighlightColor: 'transparent',
+          },
+        }, [
+          h('span', { key: 'l' }, item.label),
+          item.badge ? h('span', {
+            key: 'b',
+            style: {
+              padding: '0 6px',
+              borderRadius: RADIUS.pill,
+              background: active ? C.overlay : 'transparent',
+              border: `1px solid ${C.border1}`,
+              fontSize: 10.5,
+              fontVariantNumeric: 'tabular-nums',
+              color: C.textFaint,
+            },
+          }, item.badge) : null,
+        ])
+      }))
+    }
+
+/**
+ * 统计数字块：一个大数字 + 一行标签。
+ *
+ * @param {object} props
+ * @param {string} props.label
+ * @param {string|number} props.value
+ * @param {string} [props.hint]
+ * @param {'neutral'|'accent'|'success'|'danger'|'warn'} [props.tone]
+ * @returns {import('react').ReactElement}
+ */
+      function Stat(props) {
+      const tone = props.tone ?? 'neutral'
+      const color = {
+        neutral: C.text,
+        accent: C.accent,
+        success: C.success,
+        danger: C.danger,
+        warn: C.warn,
+      }[tone] ?? C.text
+      return h('div', {
+        'aria-label': `${props.label} ${props.value}`,
+        style: {
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 2,
+          minWidth: 96,
+          flex: '1 1 96px',
+          padding: '10px 13px',
+          borderRadius: RADIUS.md,
+          border: `1px solid ${C.border1}`,
+          background: C.bg1,
+          boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.06)',
+        },
+      }, [
+        h('span', {
+          key: 'v',
+          style: {
+            fontSize: 19, fontWeight: 680, lineHeight: 1.35,
+            letterSpacing: '-.4px', fontVariantNumeric: 'tabular-nums', color,
+          },
+        }, String(props.value)),
+        h('span', {
+          key: 'l',
+          style: { fontSize: FS.small, lineHeight: 1.7, color: C.textDim },
+        }, props.label),
+        props.hint ? h('span', {
+          key: 'h',
+          style: { fontSize: 10.5, lineHeight: 1.65, color: C.textFaint },
+        }, props.hint) : null,
+      ])
+    }
+
+/**
+ * 可选芯片（单个选中 / 单选组）。
+ *
+ * @param {object} props
+ * @param {string} props.label
+ * @param {boolean} [props.active]
+ * @param {() => void} props.onClick
+ * @param {string} [props.count] 右侧小数字
+ * @returns {import('react').ReactElement}
+ */
+      function Chip(props) {
+      const active = props.active === true
+      return h('button', {
+        type: 'button',
+        'aria-pressed': active ? 'true' : 'false',
+        onClick: props.onClick,
+        style: {
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          padding: '3px 11px',
+          borderRadius: RADIUS.pill,
+          border: `1px solid ${active ? `color-mix(in srgb, ${C.accent} 55%, transparent)` : C.border2}`,
+          background: active ? `color-mix(in srgb, ${C.accent} 12%, transparent)` : C.bg1,
+          color: active ? C.accent : C.textDim,
+          font: 'inherit',
+          fontSize: FS.small,
+          fontWeight: active ? 620 : 500,
+          lineHeight: 1.7,
+          cursor: 'pointer',
+          whiteSpace: 'nowrap',
+          transition: `background .18s ${EASE.out}, border-color .18s ${EASE.out}, color .18s ${EASE.out}`,
+          WebkitTapHighlightColor: 'transparent',
+        },
+      }, [
+        h('span', { key: 'l' }, props.label),
+        props.count !== undefined && props.count !== null
+          ? h('span', { key: 'c', style: { opacity: 0.72, fontVariantNumeric: 'tabular-nums' } }, String(props.count))
+          : null,
+      ])
+    }
+
+/**
+ * 复选框。原生 input 太丑，这里画一个方框 + 勾。
+ *
+ * @param {object} props
+ * @param {boolean} props.checked
+ * @param {(next: boolean) => void} props.onChange
+ * @param {string} [props.label] 无障碍标签
+ * @returns {import('react').ReactElement}
+ */
+      function Checkbox(props) {
+      const on = props.checked === true
+      return h('button', {
+        type: 'button',
+        role: 'checkbox',
+        'aria-checked': on ? 'true' : 'false',
+        'aria-label': props.label,
+        onClick: () => props.onChange(!on),
+        style: {
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 17,
+          height: 17,
+          flex: 'none',
+          padding: 0,
+          borderRadius: 5,
+          border: `1px solid ${on ? 'transparent' : C.border2}`,
+          background: on ? C.accent : C.bgBase,
+          boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.14)',
+          color: '#fff',
+          fontSize: 11,
+          lineHeight: 1,
+          cursor: 'pointer',
+          transition: `background .16s ${EASE.out}, border-color .16s ${EASE.out}`,
+          WebkitTapHighlightColor: 'transparent',
+        },
+      }, on ? '✓' : '')
+    }
+
+/**
+ * 分段控件（两个以上互斥选项，比下拉更一眼看全）。
+ *
+ * @param {object} props
+ * @param {Array<{ id: string, label: string }>} props.items
+ * @param {string} props.value
+ * @param {(id: string) => void} props.onChange
+ * @returns {import('react').ReactElement}
+ */
+      function Segment(props) {
+      const items = Array.isArray(props.items) ? props.items : []
+      return h('div', {
+        role: 'radiogroup',
+        'aria-label': props.label,
+        style: {
+          display: 'inline-flex',
+          padding: 2,
+          borderRadius: RADIUS.pill,
+          border: `1px solid ${C.border1}`,
+          background: C.bg1,
+        },
+      }, items.map((item) => {
+        const active = item.id === props.value
+        return h('button', {
+          key: item.id,
+          type: 'button',
+          role: 'radio',
+          'aria-checked': active ? 'true' : 'false',
+          onClick: () => props.onChange(item.id),
+          style: {
+            padding: '3px 12px',
+            borderRadius: RADIUS.pill,
+            border: 0,
+            background: active ? C.bg2 : 'transparent',
+            boxShadow: active ? 'inset 0 1px 0 rgba(255,255,255,0.08)' : 'none',
+            color: active ? C.text : C.textDim,
+            font: 'inherit',
+            fontSize: FS.small,
+            fontWeight: active ? 620 : 500,
+            lineHeight: 1.7,
+            cursor: 'pointer',
+            whiteSpace: 'nowrap',
+            transition: `background .18s ${EASE.out}, color .18s ${EASE.out}`,
+            WebkitTapHighlightColor: 'transparent',
+          },
+        }, item.label)
+      }))
+    }
+
+/**
  * 造一套原语。
  *
  * @param {Function} h React.createElement（由插件入口从 `require('react')` 拿到）
@@ -3583,6 +6481,7 @@ window.__ModuleLoader__.load({
  *   Card: Function, Button: Function, Switch: Function, Input: Function,
  *   Select: Function, Badge: Function, Note: Function, Field: Function,
  *   PageHeader: Function, Page: Function,
+ *   Tabs: Function, Stat: Function, Chip: Function, Checkbox: Function, Segment: Function,
  *   FS: object, GAP: object, RADIUS: object, C: object, EASE: object, sx: Function, hintStyle: Function,
  * }}
  */
@@ -3592,6 +6491,7 @@ window.__ModuleLoader__.load({
       }
       return {
         Card, Button, Switch, Input, Select, Badge, Note, Field, PageHeader, Page,
+        Tabs, Stat, Chip, Checkbox, Segment,
         FS, GAP, RADIUS, C, EASE, sx, hintStyle,
       }
     }
@@ -3601,33 +6501,83 @@ window.__ModuleLoader__.load({
 
     // ═══ settings.js ═══
     var __mod_settings = (function () {
-      var { loadUx, saveUx, DEFAULT_TIMING } = __mod_config
+      var { loadUx, saveUx, DEFAULT_MARK_COLOR, MARK_COLOR_PRESETS } = __mod_config
+      var { markColorToCss } = __mod_marker
       var { makePrimitives } = __mod_ui
-      var { parseImportText } = __mod_wordbook
+      var { parseImportDetailed, summarizeImport, glossText, IMPORT_FORMATS } = __mod_importer
+      var { API_PREFIX } = __mod_net
+      var { GRADE_BUTTONS, REVIEW_FILTERS, DIRECTIONS, AHEAD_COUNT, filterQueue, queueForDirection, cardBackFor, roundSummary, dueLabel, aheadQueue, shouldHandleKey, actionForKey, briefTextFor, booksOfEntry, ReviewCardBack, PronounceButton, canSpeak } = __mod_review
+      var { briefOf, describeEntry } = __mod_dict
+      var { normalizeKey } = __mod_word
 /**
  * settings.js —— 插件设置面板（挂在 Plugins 页的插件详情里）。
  *
- * 四块：
- *   1. 翻译接口：选 google / bing / 关闭
- *   2. 离线词库：显示当前版本与体积，可重新下载
- *   3. 生词本：显示数量、导入、导出、清空
- *   4. 交互参数：悬停释义条数、卡片宽度这些
+ * v2 起改成**顶部 tab 导航**五个页签（设计-v2 §B）：
+ *   1. 生词本   —— 统计条 + 搜索/筛选/词书/排序 + 表格分页 + 批量操作 + 导出
+ *   2. 复习     —— 刷词卡（review.js 提供出题与评分，这里只画）
+ *   3. 导入     —— 粘贴/文件 → 解析预览 → 确认写库（importer.js 负责解析）
+ *   4. 外观与交互 —— 原有字段全保留，另含词库与句子库、翻译接口
+ *   5. 有道同步 —— 本任务先放占位（D 任务填充真实面板）
  *
  * 所有设置存在 localStorage，不走宿主 Config —— 这些是界面偏好，
  * 为了让用户改一个数字去重启宿主是不合理的。
  */
 
+// 预览必须与实际渲染用同一个颜色解析：theme-error 哨兵 → var(--dsw-alias-state-error-primary,…)。
+// 自己另写一套（比如把哨兵当 hex 塞进 color-mix）会让预览与正文对不上。
+// §E1 复习背面发音：复用 review.js 那一套（canSpeak/speakWord 在里面），
+// 不在这里另写发音逻辑 —— card.js 与复习卡共用同一份实现。
+// 注意：注释不能写在上面的 import 花括号内部，构建器按逗号切名字会把它当导入名。
+
+/**
+ * 生词本表格每页行数（设计 §B1：50 行一页）。
+ *
+ * v1 这里是个 chips 墙，用 CHIP_LIMIT=120 硬截断，超出的只留一句「还有 N 个」。
+ * v2 改成真分页：全部词都能翻到，所以 CHIP_LIMIT 这个常量已经删掉了 ——
+ * 现在「上限有交代」由下面的 PAGE_SIZE 与 PREVIEW_ROW_LIMIT 承担。
+ */
+    const PAGE_SIZE = 50
+
+/**
+ * 导入预览表最多渲染多少行。
+ *
+ * 预览是给眼睛看的，不是给人滚两万行用的：词表可能两万条（有道上限），
+ * 全渲染会卡死面板。**截断的只是预览的显示**，确认导入时仍然导入全部 ——
+ * 所以这不是静默丢词，表格下面会明确写出「还有 N 行没显示，仍会全部导入」。
+ */
+    const PREVIEW_ROW_LIMIT = 200
+
+/** 状态 → 中文名与徽章语气。四色：new 灰 / unknown 红 / fuzzy 橙 / known 绿。 */
+    const STATE_META = {
+      new: { label: '未学', tone: 'neutral' },
+      unknown: { label: '不认识', tone: 'danger' },
+      fuzzy: { label: '记错', tone: 'warn' },
+      known: { label: '已掌握', tone: 'success' },
+    }
+
+/** 来源 → 中文短名。 */
+    const SOURCE_LABEL = {
+      dsh: '划词',
+      youdao: '有道',
+      manual: '手动',
+      import: '导入',
+    }
+
+/** 排序方式。 */
+    const SORT_OPTIONS = [
+      { id: 'recent', label: '最近添加' },
+      { id: 'stale', label: '最久未复习' },
+      { id: 'alpha', label: '字母序' },
+    ]
 
 /** 设置面板的样式。 */
     const CSS = `
 /* ═══════════════════════════════════════════════════════════════════════
    英语翻译设置 · 视觉系统
-   参照 dsh-get-it-for-free 的 ofm 设计语言：
-   分层用 --dsw-alias-bg-layer-1/2/3，按钮用细边 + 内高光 + 悬停扫光，
+   分层用 --dsw-alias-bg-layer-1/2，按钮细边 + 内高光 + 悬停扫光，
    卡片带拉丝细纹底与外投影。昼夜由宿主切换，这里不写死颜色。
    ═══════════════════════════════════════════════════════════════════════ */
 
-/** 字号标度：三档，不再散成五档 */
     .hds-page {
       --ease-instrument: cubic-bezier(.16,1,.3,1);
       --ease-settle: cubic-bezier(.34,1.4,.4,1);
@@ -3638,7 +6588,6 @@ window.__ModuleLoader__.load({
       flex-direction: column;
       gap: 22px;
       max-width: 820px;
-  /* 不通栏贴左：宽屏下居中，两侧留白 */
       margin-inline: auto;
       width: 100%;
       padding: 4px 0 32px;
@@ -3649,7 +6598,6 @@ window.__ModuleLoader__.load({
     }
     .hds-page * { box-sizing: border-box; }
 
-/* ── 页面头 ──────────────────────────────────────────────────────────── */
     .hds-header {
       display: flex;
       flex-direction: column;
@@ -3657,61 +6605,33 @@ window.__ModuleLoader__.load({
       padding: 2px 2px 20px;
       border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
     }
-    .hds-header-line {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
+    .hds-header-line { display: flex; align-items: center; gap: 10px; }
     .hds-header-icon { font-size: 20px; line-height: 1; }
     .hds-header-title {
-      margin: 0;
-      font-size: 20px;
-      font-weight: 680;
-      letter-spacing: -.3px;
-      line-height: 1.4;
+      margin: 0; font-size: 20px; font-weight: 680; letter-spacing: -.3px; line-height: 1.4;
     }
     .hds-header-desc {
-      margin: 0;
-      max-width: 58ch;
-      font-size: var(--fs-body);
-      line-height: 1.85;
+      margin: 0; max-width: 58ch; font-size: var(--fs-body); line-height: 1.85;
       color: var(--dsw-alias-label-secondary, #5c5c5c);
     }
-    .hds-header-stats {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 2px;
-    }
+    .hds-header-stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
     .hds-stat-chip {
-      display: inline-flex;
-      align-items: baseline;
-      gap: 3px;
-      padding: 4px 11px;
-      border-radius: 999px;
+      display: inline-flex; align-items: baseline; gap: 3px;
+      padding: 4px 11px; border-radius: 999px;
       border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
       background: var(--dsw-alias-bg-layer-1, #f7f7f8);
-      font-size: var(--fs-small);
-      line-height: 1.7;
+      font-size: var(--fs-small); line-height: 1.7;
       color: var(--dsw-alias-label-secondary, #5c5c5c);
     }
     .hds-stat-chip b {
-      font-size: 12.5px;
-      font-weight: 650;
-      font-variant-numeric: tabular-nums;
+      font-size: 12.5px; font-weight: 650; font-variant-numeric: tabular-nums;
       color: var(--dsw-alias-label-primary, #1a1a1a);
     }
 
-    .hds-root {
-      display: flex;
-      flex-direction: column;
-      gap: 16px;
-    }
+    .hds-root { display: flex; flex-direction: column; gap: 16px; }
 
-/* ── 分区：一张卡片 ──────────────────────────────────────────────────── */
     .hds-section {
-      display: flex;
-      flex-direction: column;
+      display: flex; flex-direction: column;
       border-radius: 14px;
       border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
       background:
@@ -3720,76 +6640,43 @@ window.__ModuleLoader__.load({
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%);
       overflow: hidden;
     }
-
     .hds-head {
-      display: flex;
-      flex-direction: column;
-      gap: 5px;
+      display: flex; flex-direction: column; gap: 5px;
       padding: 15px 18px 13px;
       border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
       background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 60%, transparent);
     }
-
     .hds-title {
-      margin: 0;
-      font-size: var(--fs-title);
-      font-weight: 680;
-      letter-spacing: -.15px;
-      line-height: 1.5;
+      margin: 0; font-size: var(--fs-title); font-weight: 680;
+      letter-spacing: -.15px; line-height: 1.5;
     }
-
     .hds-subtitle {
-      margin: 0;
-      font-size: var(--fs-body);
-      font-weight: 650;
-      line-height: 1.6;
+      margin: 0; font-size: var(--fs-body); font-weight: 650; line-height: 1.6;
       color: var(--dsw-alias-label-primary, #1a1a1a);
     }
-
     .hds-hint {
-      margin: 0;
-      font-size: var(--fs-small);
-      line-height: 1.9;
+      margin: 0; font-size: var(--fs-small); line-height: 1.9;
       color: var(--dsw-alias-label-secondary, #5c5c5c);
     }
-
     .hds-stack { display: flex; flex-direction: column; gap: 14px; padding: 16px 18px 18px; }
     .hds-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
-/* 一行设置：标签在上、控件在下，留足垂直空间 */
-    .hds-field {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-      padding: 4px 0;
-    }
+    .hds-field { display: flex; flex-direction: column; gap: 8px; padding: 4px 0; }
     .hds-field > .hds-label {
-      font-size: 12.5px;
-      line-height: 1.7;
+      font-size: 12.5px; line-height: 1.7;
       color: var(--dsw-alias-label-secondary, #5c5c5c);
     }
 
-/* ── 按钮 ────────────────────────────────────────────────────────────── */
     .hds-btn {
-      position: relative;
-      overflow: hidden;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 7px;
-      min-height: 32px;
-      padding: 6px 16px;
-      border-radius: 9px;
+      position: relative; overflow: hidden;
+      display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+      min-height: 32px; padding: 6px 16px; border-radius: 9px;
       border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
       background: color-mix(in srgb, var(--dsw-alias-bg-layer-2, #ffffff) 84%, transparent);
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 7%);
       color: var(--dsw-alias-label-primary, #1a1a1a);
-      font: inherit;
-      font-size: 12.5px;
-      font-weight: 580;
-      line-height: 1.4;
-      cursor: pointer;
-      white-space: nowrap;
+      font: inherit; font-size: 12.5px; font-weight: 580; line-height: 1.4;
+      cursor: pointer; white-space: nowrap;
       transition:
         transform .16s var(--ease-settle),
         border-color .2s var(--ease-instrument),
@@ -3798,40 +6685,26 @@ window.__ModuleLoader__.load({
         opacity .16s ease;
       -webkit-tap-highlight-color: transparent;
     }
-
-/* 悬停扫光：一条斜向高光从左侧滑过 */
     .hds-btn::after {
-      content: "";
-      position: absolute;
-      top: 0; bottom: 0;
-      left: -60%;
-      width: 42%;
+      content: ""; position: absolute; top: 0; bottom: 0; left: -60%; width: 42%;
       background: linear-gradient(100deg, transparent, rgb(255 255 255 / 14%), transparent);
-      transform: skewX(-18deg);
-      transition: left .5s var(--ease-instrument);
+      transform: skewX(-18deg); transition: left .5s var(--ease-instrument);
       pointer-events: none;
     }
     .hds-btn:hover:not(:disabled)::after { left: 118%; }
-
     .hds-btn:hover:not(:disabled) {
       transform: translateY(-1px);
       border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 62%, var(--dsw-alias-border-l2, rgba(0,0,0,.18)));
       background: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 7%, var(--dsw-alias-bg-layer-2, #ffffff));
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 10%);
     }
-
-/* 按下：快速陷落 + 内阴影加深 */
     .hds-btn:active:not(:disabled) {
-      transform: scale(.985);
-      transition-duration: .09s;
+      transform: scale(.985); transition-duration: .09s;
       box-shadow: inset 0 2px 5px rgb(0 0 0 / 14%), inset 0 1px 0 rgb(255 255 255 / 3%);
     }
-
     .hds-btn:focus-visible {
-      outline: 2px solid var(--dsw-alias-brand-primary, #4d6bfe);
-      outline-offset: 2px;
+      outline: 2px solid var(--dsw-alias-brand-primary, #4d6bfe); outline-offset: 2px;
     }
-
     .hds-btn:disabled { opacity: .45; cursor: default; box-shadow: none; transform: none; }
     .hds-btn:disabled::after { content: none; }
 
@@ -3841,21 +6714,15 @@ window.__ModuleLoader__.load({
         var(--dsw-alias-brand-primary, #4d6bfe));
       border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 82%, #000);
       color: var(--dsw-alias-label-primary, #fff);
-      box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%),
-                  inset 0 -10px 18px -12px rgb(0 0 0 / 24%);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%), inset 0 -10px 18px -12px rgb(0 0 0 / 24%);
     }
     .hds-btn-primary:hover:not(:disabled) {
       background: linear-gradient(180deg,
         var(--dsw-alias-brand-primary, #4d6bfe),
         color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 88%, #000));
-      box-shadow: inset 0 1px 0 rgb(255 255 255 / 26%),
-                  inset 0 -10px 18px -12px rgb(0 0 0 / 18%);
     }
-
     .hds-btn-ghost {
-      background: transparent;
-      border-color: transparent;
-      box-shadow: none;
+      background: transparent; border-color: transparent; box-shadow: none;
       color: var(--dsw-alias-label-secondary, #5c5c5c);
     }
     .hds-btn-ghost:hover:not(:disabled) {
@@ -3864,7 +6731,6 @@ window.__ModuleLoader__.load({
       color: var(--dsw-alias-label-primary, #1a1a1a);
     }
     .hds-btn-ghost::after { content: none; }
-
     .hds-btn-danger {
       border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 55%, var(--dsw-alias-border-l2, rgba(0,0,0,.18)));
       color: var(--dsw-alias-state-error-primary, #e5484d);
@@ -3873,19 +6739,13 @@ window.__ModuleLoader__.load({
       background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 8%, var(--dsw-alias-bg-layer-2, #ffffff));
       border-color: var(--dsw-alias-state-error-primary, #e5484d);
     }
-
     .hds-btn-sm { min-height: 28px; padding: 4px 12px; font-size: 11.5px; border-radius: 7px; }
 
-/* ── 输入 ────────────────────────────────────────────────────────────── */
     .hds-input, .hds-select {
-      font: inherit;
-      font-size: 13px;
-      padding: 8px 12px;
-      border-radius: 9px;
+      font: inherit; font-size: 13px; padding: 8px 12px; border-radius: 9px;
       border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
       background: var(--dsw-alias-bg-layer-1, #f7f7f8);
-      box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%),
-                  inset 0 2px 6px -2px rgb(0 0 0 / 10%);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%), inset 0 2px 6px -2px rgb(0 0 0 / 10%);
       color: var(--dsw-alias-label-primary, #1a1a1a);
       min-width: 0;
       transition: border-color .18s var(--ease-instrument), box-shadow .2s var(--ease-instrument);
@@ -3896,24 +6756,18 @@ window.__ModuleLoader__.load({
     .hds-input:focus, .hds-select:focus {
       outline: none;
       border-color: var(--dsw-alias-brand-primary, #4d6bfe);
-      box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%),
-                  inset 0 2px 6px -2px rgb(0 0 0 / 8%),
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%), inset 0 2px 6px -2px rgb(0 0 0 / 8%),
                   0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 16%, transparent);
     }
     .hds-input[type="number"] { max-width: 110px; }
 
     .hds-textarea {
-      width: 100%;
-      min-height: 128px;
+      width: 100%; min-height: 128px;
       font-family: var(--ds-font-family-code, ui-monospace, monospace);
-      font-size: 12.5px;
-      line-height: 1.85;
-      padding: 12px 14px;
-      border-radius: 9px;
+      font-size: 12.5px; line-height: 1.85; padding: 12px 14px; border-radius: 9px;
       border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
       background: var(--dsw-alias-bg-layer-1, #f7f7f8);
-      box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%),
-                  inset 0 2px 6px -2px rgb(0 0 0 / 10%);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 6%), inset 0 2px 6px -2px rgb(0 0 0 / 10%);
       color: var(--dsw-alias-label-primary, #1a1a1a);
       resize: vertical;
       transition: border-color .18s var(--ease-instrument), box-shadow .2s var(--ease-instrument);
@@ -3925,196 +6779,260 @@ window.__ModuleLoader__.load({
                   0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 16%, transparent);
     }
 
-/* ── 开关：spring 滑块 ───────────────────────────────────────────────── */
+/* ── 开关 ─────────────────────────────────────────────────────────────── */
     .hds-switch {
-      display: inline-flex;
-      align-items: center;
-      gap: 9px;
-      cursor: pointer;
-      user-select: none;
-      appearance: none;
-      background: transparent;
-      border: 0;
-      padding: 0;
-      font: inherit;
-      color: inherit;
-      -webkit-tap-highlight-color: transparent;
+      display: inline-flex; align-items: center; gap: 9px; cursor: pointer;
+      user-select: none; appearance: none; background: transparent; border: 0;
+      padding: 0; font: inherit; color: inherit; -webkit-tap-highlight-color: transparent;
     }
-
     .hds-switch-track {
-      width: 38px;
-      height: 21px;
-      border-radius: 999px;
+      width: 38px; height: 21px; border-radius: 999px;
       background: var(--dsw-alias-bg-layer-1, #f7f7f8);
       border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
       box-shadow: inset 0 1px 3px rgb(0 0 0 / 10%), inset 0 -1px 0 rgb(255 255 255 / 4%);
-      position: relative;
-      flex: none;
-      transition: background .22s var(--ease-instrument),
-                  border-color .22s var(--ease-instrument),
+      position: relative; flex: none;
+      transition: background .22s var(--ease-instrument), border-color .22s var(--ease-instrument),
                   box-shadow .22s var(--ease-instrument);
     }
-
     .hds-switch-track::after {
-      content: "";
-      position: absolute;
-      top: 2px; left: 2px;
-      width: 15px; height: 15px;
-      border-radius: 50%;
-      background: var(--dsw-alias-label-primary, #1a1a1a);
+      content: ""; position: absolute; top: 2px; left: 2px; width: 15px; height: 15px;
+      border-radius: 50%; background: var(--dsw-alias-label-primary, #1a1a1a);
       box-shadow: 0 1px 3px rgb(0 0 0 / 28%), inset 0 1px 0 rgb(255 255 255 / 20%);
-      transition: transform .28s var(--ease-settle),
-                  background .2s var(--ease-instrument),
+      transition: transform .28s var(--ease-settle), background .2s var(--ease-instrument),
                   width .14s var(--ease-instrument);
     }
-
     .hds-switch:active .hds-switch-track::after { width: 18px; }
-
     .hds-switch[aria-checked="true"] .hds-switch-track {
       background: var(--dsw-alias-brand-primary, #4d6bfe);
       border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 85%, #000);
-      box-shadow: inset 0 1px 3px rgb(0 0 0 / 14%), inset 0 -1px 0 rgb(255 255 255 / 8%);
     }
     .hds-switch[aria-checked="true"] .hds-switch-track::after {
-      transform: translateX(17px);
-      background: var(--dsw-alias-label-primary, #fff);
+      transform: translateX(17px); background: var(--dsw-alias-label-primary, #fff);
     }
-    .hds-switch[aria-checked="true"]:active .hds-switch-track::after {
-      transform: translateX(14px);
-    }
+    .hds-switch[aria-checked="true"]:active .hds-switch-track::after { transform: translateX(14px); }
     .hds-switch:focus-visible .hds-switch-track {
       box-shadow: 0 0 0 3px color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 22%, transparent);
     }
-
     .hds-switch-text { font-size: 13px; line-height: 1.7; }
 
-/* ── 卡片 ────────────────────────────────────────────────────────────── */
-    .hds-cards { display: flex; flex-direction: column; gap: 10px; }
-
+/* ── 卡片 ─────────────────────────────────────────────────────────────── */
     .hds-card {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-      padding: 13px 15px;
+      display: flex; align-items: center; gap: 14px; padding: 13px 15px;
       border-radius: 13px;
       border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
-  /* 拉丝细纹垫底：从边缘隐约透出，不做成显眼图案 */
       background:
         repeating-linear-gradient(115deg, rgb(255 255 255 / 4.5%) 0 1px, transparent 1px 2.5px) padding-box,
         color-mix(in srgb, var(--dsw-alias-bg-layer-2, #ffffff) 84%, transparent);
-      box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%),
-                  inset 0 -12px 24px -16px rgb(0 0 0 / 14%);
-      transition: transform .22s var(--ease-instrument),
-                  box-shadow .26s var(--ease-instrument),
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%), inset 0 -12px 24px -16px rgb(0 0 0 / 14%);
+      transition: transform .22s var(--ease-instrument), box-shadow .26s var(--ease-instrument),
                   border-color .2s var(--ease-instrument);
     }
-
     .hds-card:hover {
       transform: translateY(-1px);
       border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 58%, var(--dsw-alias-border-l2, rgba(0,0,0,.18)));
-      box-shadow: inset 0 1px 0 rgb(255 255 255 / 11%),
-                  inset 0 -12px 24px -16px rgb(0 0 0 / 10%);
     }
-
     .hds-card-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
-
     .hds-card-name {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 13.5px;
-      font-weight: 650;
-      letter-spacing: -.1px;
-      line-height: 1.55;
+      display: flex; align-items: center; gap: 8px;
+      font-size: 13.5px; font-weight: 650; letter-spacing: -.1px; line-height: 1.55;
     }
-
     .hds-card-meta {
-      font-size: 12px;
-      line-height: 1.85;
+      font-size: 12px; line-height: 1.85;
       color: var(--dsw-alias-label-secondary, #5c5c5c);
     }
 
+/* ── 状态徽章 ─────────────────────────────────────────────────────────── */
     .hds-badge {
-      display: inline-flex;
-      align-items: center;
-      padding: 1px 8px;
-      border-radius: 999px;
-      font-size: 10.5px;
-      font-weight: 500;
-      line-height: 1.7;
-      border: 1px solid transparent;
-      white-space: nowrap;
+      display: inline-flex; align-items: center; padding: 1px 8px;
+      border-radius: 999px; font-size: 10.5px; font-weight: 500; line-height: 1.7;
+      border: 1px solid transparent; white-space: nowrap;
     }
-    .hds-badge-builtin {
+    .hds-badge-new { color: var(--dsw-alias-label-secondary, #5c5c5c); border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.18)); }
+    .hds-badge-unknown { color: var(--dsw-alias-state-error-primary, #e5484d); border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 45%, transparent); }
+    .hds-badge-fuzzy { color: var(--dsw-alias-state-warn-primary, #f0a441); border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #f0a441) 45%, transparent); }
+    .hds-badge-known { color: var(--dsw-alias-state-success-primary, #2f9e44); border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 45%, transparent); }
+    .hds-badge-builtin { color: var(--dsw-alias-label-secondary, #5c5c5c); border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.18)); }
+
+/* ── 词表 ─────────────────────────────────────────────────────────────── */
+    .hds-table { display: flex; flex-direction: column; border-radius: 11px; overflow: hidden;
+      border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10)); }
+    .hds-thead, .hds-trow {
+      display: grid;
+      grid-template-columns: 28px minmax(96px, 1.3fr) 78px 96px 74px minmax(120px, 1fr);
+      gap: 10px;
+      align-items: center;
+      padding: 8px 12px;
+    }
+    .hds-thead {
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 92%, transparent);
+      border-bottom: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+      font-size: 11px; line-height: 1.6;
       color: var(--dsw-alias-label-secondary, #5c5c5c);
-      border-color: var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      letter-spacing: .02em;
     }
-    .hds-badge-on {
-      color: var(--dsw-alias-state-success-primary, #2f9e44);
-      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 45%, transparent);
+    .hds-trow {
+      border-bottom: 1px solid color-mix(in srgb, var(--dsw-alias-border-l1, rgba(0,0,0,.10)) 60%, transparent);
+      font-size: 12.5px; line-height: 1.7;
+      transition: background .16s var(--ease-instrument);
     }
+    .hds-trow:last-child { border-bottom: 0; }
+    .hds-trow:hover { background: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 4%, transparent); }
+    .hds-thead > span, .hds-trow > span { min-width: 0; }
+    .hds-cell-head {
+      font-weight: 650; letter-spacing: -.1px;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .hds-cell-head button {
+      font: inherit; color: inherit; background: none; border: 0; padding: 0;
+      cursor: pointer; text-align: left;
+      border-bottom: 1px dashed color-mix(in srgb, var(--dsw-alias-border-l2, rgba(0,0,0,.18)) 80%, transparent);
+    }
+    .hds-cell-head button:hover { color: var(--dsw-alias-brand-primary, #4d6bfe); border-bottom-color: currentColor; }
+    .hds-cell-dim { font-size: 11.5px; color: var(--dsw-alias-label-secondary, #5c5c5c); font-variant-numeric: tabular-nums; }
+    .hds-cell-ops { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 
-/* ── 生词本 chips ────────────────────────────────────────────────────── */
-    .hds-chips {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      max-height: 190px;
-      overflow: auto;
-      padding: 4px 2px 4px 0;
+    .hds-detail {
+      grid-column: 1 / -1;
+      display: flex; flex-direction: column; gap: 8px;
+      margin: 2px 0 6px;
+      padding: 12px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 70%, transparent);
+      font-size: 12.5px; line-height: 1.85;
     }
-    .hds-chips::-webkit-scrollbar { width: 10px; height: 10px; }
-    .hds-chips::-webkit-scrollbar-track { background: transparent; }
-    .hds-chips::-webkit-scrollbar-thumb {
-      background: color-mix(in srgb, var(--dsw-alias-label-secondary, #5c5c5c) 32%, transparent);
-      border-radius: 5px;
-    }
-
-    .hds-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 4px 6px 4px 12px;
-      border-radius: 999px;
+    .hds-detail-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+    .hds-detail-key { flex: none; min-width: 44px; font-size: 11.5px; color: var(--dsw-alias-label-secondary, #5c5c5c); }
+    .hds-detail-val { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+    .hds-detail-sense { display: flex; gap: 6px; flex-wrap: wrap; }
+    .hds-detail-pos {
+      flex: none; font-size: 10.5px; padding: 0 6px; border-radius: 999px;
       border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
-      background: var(--dsw-alias-bg-layer-1, #f7f7f8);
-      font-size: 12.5px;
-      line-height: 1.7;
-      transition: border-color .18s var(--ease-instrument), background .18s var(--ease-instrument);
-    }
-    .hds-chip:hover {
-      border-color: color-mix(in srgb, var(--dsw-alias-border-l2, rgba(0,0,0,.18)) 55%, var(--dsw-alias-brand-primary, #4d6bfe));
+      color: var(--dsw-alias-label-secondary, #5c5c5c); line-height: 1.7;
     }
 
-    .hds-chip-x {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 19px; height: 19px;
-      border: none;
-      border-radius: 50%;
-      background: none;
+/* ── 分页 ─────────────────────────────────────────────────────────────── */
+    .hds-pager {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 10px; flex-wrap: wrap;
+      padding-top: 2px;
+      font-size: var(--fs-small);
       color: var(--dsw-alias-label-secondary, #5c5c5c);
-      cursor: pointer;
-      font-size: 14px;
-      line-height: 1;
-      padding: 0;
-      transition: background .16s ease, color .16s ease;
+      font-variant-numeric: tabular-nums;
     }
-    .hds-chip-x:hover {
-      background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 14%, transparent);
+
+/* ── 打卡格子 ─────────────────────────────────────────────────────────── */
+    .hds-heat { display: flex; gap: 4px; align-items: flex-end; flex-wrap: wrap; }
+    .hds-heat-cell {
+      width: 15px; height: 15px; border-radius: 4px;
+      border: 1px solid color-mix(in srgb, var(--dsw-alias-border-l1, rgba(0,0,0,.10)) 70%, transparent);
+      background: color-mix(in srgb, var(--dsw-alias-label-secondary, #5c5c5c) 12%, transparent);
+    }
+    .hds-heat-legend {
+      display: flex; align-items: center; gap: 5px;
+      font-size: 10.5px; color: var(--dsw-alias-label-secondary, #5c5c5c);
+    }
+
+/* ── 状态占比条 ───────────────────────────────────────────────────────── */
+    .hds-bar {
+      display: flex; height: 9px; border-radius: 999px; overflow: hidden;
+      border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 80%, transparent);
+    }
+    .hds-bar > span { display: block; height: 100%; }
+
+/* ── 导入预览 ─────────────────────────────────────────────────────────── */
+    .hds-preview { display: flex; flex-direction: column; gap: 10px; }
+    .hds-preview-table {
+      display: flex; flex-direction: column; border-radius: 11px; overflow: hidden;
+      border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+      max-height: 360px; overflow-y: auto;
+    }
+    .hds-preview-row {
+      display: grid;
+      grid-template-columns: 40px minmax(90px, 1.1fr) 74px minmax(120px, 1.6fr);
+      gap: 10px; align-items: center;
+      padding: 7px 12px;
+      border-bottom: 1px solid color-mix(in srgb, var(--dsw-alias-border-l1, rgba(0,0,0,.10)) 60%, transparent);
+      font-size: 12.5px; line-height: 1.7;
+    }
+    .hds-preview-row:last-child { border-bottom: 0; }
+    .hds-preview-line { font-size: 11px; color: var(--dsw-alias-label-secondary, #5c5c5c); font-variant-numeric: tabular-nums; }
+    .hds-preview-gloss {
+      font-size: 12px; color: var(--dsw-alias-label-secondary, #5c5c5c);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .hds-preview-skip {
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 10px 13px; border-radius: 10px;
+      border: 1px dashed var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      font-size: 11.5px; line-height: 1.8;
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
+    }
+    .hds-skip-row { display: flex; gap: 8px; }
+    .hds-skip-line { flex: none; min-width: 34px; font-variant-numeric: tabular-nums; }
+
+/* ── 复习卡 ───────────────────────────────────────────────────────────── */
+    .hds-review-top {
+      display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: space-between;
+    }
+    .hds-cardstage {
+      display: flex; flex-direction: column; align-items: center; gap: 14px;
+      padding: 26px 20px;
+      border-radius: 14px;
+      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      background:
+        repeating-linear-gradient(115deg, rgb(255 255 255 / 4%) 0 1px, transparent 1px 2.5px) padding-box,
+        color-mix(in srgb, var(--dsw-alias-bg-layer-2, #ffffff) 88%, transparent);
+      box-shadow: inset 0 1px 0 rgb(255 255 255 / 8%), 0 10px 26px -18px rgb(0 0 0 / 30%);
+      min-height: 190px;
+      justify-content: center;
+      text-align: center;
+      cursor: pointer;
+    }
+    .hds-cardstage-word {
+      font-size: 30px; font-weight: 680; letter-spacing: -.6px; line-height: 1.3;
+      font-family: var(--ds-font-family-code, ui-monospace, monospace);
+      overflow-wrap: anywhere;
+    }
+    .hds-cardstage-back { display: flex; flex-direction: column; gap: 8px; align-items: center; width: 100%; }
+/* .hds-cardstage-sense / .hds-cardstage-example 已随之删除：
+   背面的义项与例句现在由 review.js 的 ReviewCardBack 内联渲染，
+   留着这两条规则等于一份无人使用的样式债。 */
+    .hds-cardstage-tip { font-size: 11.5px; color: var(--dsw-alias-label-secondary, #5c5c5c); }
+    .hds-grade-row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .hds-grade-btn {
+      flex: 1 1 110px;
+      display: inline-flex; flex-direction: column; align-items: center; gap: 1px;
+      padding: 9px 14px; border-radius: 10px;
+      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      background: var(--dsw-alias-bg-layer-2, #ffffff);
+      color: var(--dsw-alias-label-primary, #1a1a1a);
+      font: inherit; font-size: 13px; font-weight: 600; cursor: pointer;
+      transition: transform .16s var(--ease-settle), border-color .2s var(--ease-instrument),
+                  background .2s var(--ease-instrument);
+    }
+    .hds-grade-btn:hover:not(:disabled) { transform: translateY(-1px); }
+    .hds-grade-btn:active:not(:disabled) { transform: scale(.985); }
+    .hds-grade-btn:disabled { opacity: .45; cursor: default; }
+    .hds-grade-btn small { font-size: 10.5px; font-weight: 450; opacity: .7; }
+    .hds-grade-again {
+      border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 50%, var(--dsw-alias-border-l2, rgba(0,0,0,.18)));
       color: var(--dsw-alias-state-error-primary, #e5484d);
+    }
+    .hds-grade-hard {
+      border-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary, #f0a441) 50%, var(--dsw-alias-border-l2, rgba(0,0,0,.18)));
+      color: var(--dsw-alias-state-warn-primary, #f0a441);
+    }
+    .hds-grade-good {
+      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 50%, var(--dsw-alias-border-l2, rgba(0,0,0,.18)));
+      color: var(--dsw-alias-state-success-primary, #2f9e44);
     }
 
 /* ── 提示条 ──────────────────────────────────────────────────────────── */
     .hds-note {
-      display: flex;
-      gap: 9px;
-      padding: 10px 13px;
-      border-radius: 11px;
-      border: 1px solid;
-      font-size: 12px;
-      line-height: 1.8;
+      display: flex; gap: 9px; padding: 10px 13px; border-radius: 11px;
+      border: 1px solid; font-size: 12px; line-height: 1.8;
     }
     .hds-note-ok {
       border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 45%, transparent);
@@ -4134,67 +7052,268 @@ window.__ModuleLoader__.load({
 
     .hds-path {
       font-family: var(--ds-font-family-code, ui-monospace, monospace);
-      font-size: 11.5px;
-      line-height: 1.9;
-      padding: 8px 12px;
-      border-radius: 8px;
+      font-size: 11.5px; line-height: 1.9; padding: 8px 12px; border-radius: 8px;
       border: 1px dashed var(--dsw-alias-border-l2, rgba(0,0,0,.18));
       background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 60%, transparent);
       color: var(--dsw-alias-label-secondary, #5c5c5c);
       user-select: all;
     }
 
-/* 减弱动效偏好：只留颜色反馈 */
+/* ── 有道同步页签（设计 §D3） ─────────────────────────────────────── */
+
+    .hds-steps { display: flex; flex-direction: column; gap: 0; margin: 0; padding: 0; list-style: none; }
+    .hds-step {
+      display: flex; align-items: flex-start; gap: 11px;
+      padding: 9px 0; font-size: var(--fs-small); line-height: 1.85;
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
+    }
+    .hds-step + .hds-step { border-top: 1px dashed var(--dsw-alias-border-l1, rgba(0,0,0,.10)); }
+    .hds-step-no {
+      flex: none; width: 20px; height: 20px; border-radius: 50%;
+      display: inline-flex; align-items: center; justify-content: center;
+      margin-top: 2px;
+      border: 1px solid color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 45%, transparent);
+      background: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 11%, transparent);
+      color: var(--dsw-alias-brand-primary, #4d6bfe);
+      font-size: 11px; font-weight: 680; font-variant-numeric: tabular-nums;
+    }
+    .hds-step-body { flex: 1; min-width: 0; }
+    .hds-step-body b { color: var(--dsw-alias-label-primary, #1a1a1a); font-weight: 640; }
+
+    .hds-status-card {
+      display: flex; align-items: center; gap: 12px;
+      padding: 13px 15px; border-radius: 13px;
+      border: 1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.10));
+      background: var(--dsw-alias-bg-layer-1, #f7f7f8);
+    }
+    .hds-status-card[data-tone="ok"] {
+      border-color: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 42%, transparent);
+      background: color-mix(in srgb, var(--dsw-alias-state-success-primary, #2f9e44) 8%, transparent);
+    }
+    .hds-status-card[data-tone="warn"] {
+      border-color: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 46%, transparent);
+      background: color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 9%, transparent);
+    }
+    .hds-status-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .hds-status-title {
+      font-size: var(--fs-body); font-weight: 650; line-height: 1.6;
+      color: var(--dsw-alias-label-primary, #1a1a1a);
+    }
+    .hds-status-meta {
+      font-size: var(--fs-small); line-height: 1.8;
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
+      font-variant-numeric: tabular-nums;
+    }
+
+/* 「正在抓取…」进度条。sync 是一次性 POST，没有真实进度，所以是不定长流光条。 */
+    .hds-progress {
+      position: relative; overflow: hidden;
+      height: 5px; border-radius: 999px;
+      background: color-mix(in srgb, var(--dsw-alias-border-l2, rgba(0,0,0,.18)) 55%, transparent);
+    }
+    .hds-progress::after {
+      content: ""; position: absolute; inset-block: 0; width: 38%;
+      border-radius: 999px;
+      background: var(--dsw-alias-brand-primary, #4d6bfe);
+      animation: hds-progress-slide 1.15s cubic-bezier(.5,0,.5,1) infinite;
+    }
+    @keyframes hds-progress-slide {
+      0% { left: -40%; }
+      100% { left: 100%; }
+    }
+
+/* ── 生词着色设置组（设计 §C4） ─────────────────────────────────── */
+
+    .hds-swatches { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+    .hds-swatch {
+      width: 26px; height: 26px; padding: 0; border-radius: 8px;
+      border: 1px solid var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      cursor: pointer; position: relative;
+      transition: transform .16s cubic-bezier(.16,1,.3,1), box-shadow .16s cubic-bezier(.16,1,.3,1);
+    }
+    .hds-swatch:hover { transform: translateY(-1px); }
+    .hds-swatch[aria-pressed="true"] {
+      box-shadow: 0 0 0 2px var(--dsw-alias-bg-base, #fff),
+                  0 0 0 4px var(--dsw-alias-brand-primary, #4d6bfe);
+    }
+    .hds-swatch:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary, #4d6bfe); outline-offset: 3px; }
+
+/* 实时预览句：色块由内联 style 给，这里只管排版 */
+    .hds-mark-preview {
+      padding: 12px 14px; border-radius: 11px;
+      border: 1px dashed var(--dsw-alias-border-l2, rgba(0,0,0,.18));
+      background: color-mix(in srgb, var(--dsw-alias-bg-layer-1, #f7f7f8) 60%, transparent);
+      font-size: 14.5px; line-height: 2.1;
+      color: var(--dsw-alias-label-primary, #1a1a1a);
+      word-break: break-word;
+    }
+    .hds-mark-preview[data-off="true"] {
+      color: var(--dsw-alias-label-secondary, #5c5c5c);
+      font-style: italic;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .hds-progress::after { animation: none; left: 20%; }
+    }
+
     @media (prefers-reduced-motion: reduce) {
       .hds-root .hds-card:hover,
       .hds-root .hds-btn:hover:not(:disabled),
-      .hds-root .hds-btn:active:not(:disabled) { transform: none; }
+      .hds-root .hds-btn:active:not(:disabled),
+      .hds-root .hds-grade-btn:hover:not(:disabled),
+      .hds-root .hds-grade-btn:active:not(:disabled) { transform: none; }
       .hds-root .hds-btn::after { content: none; }
     }
     `
 
+/* ═══════════════════════════════════════════════════════════════════════
+   小工具
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/** localStorage，失败返回 undefined。 */
+    function safeLocal() {
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) return window.localStorage
+      } catch { /* ignore */ }
+      return undefined
+    }
+
+/** 状态徽章文案。 */
+    const stateLabel = (state) => STATE_META[state]?.label ?? '未学'
+    const stateTone = (state) => STATE_META[state]?.tone ?? 'neutral'
+
+/**
+ * 下载一段文本为文件。
+ *
+ * 不依赖宿主能力，用 Blob + a[download]。失败静默 —— 但返回 false，
+ * 让调用方能把「导出失败」说出来（不静默失败）。
+ */
+    function downloadText(text, filename, mime = 'text/plain;charset=utf-8') {
+      try {
+        const blob = new Blob([text], { type: mime })
+        const url = URL.createObjectURL(blob)
+        const link = document.createElement('a')
+        link.href = url
+        link.download = filename
+        link.click()
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+        return true
+      } catch {
+        return false
+      }
+    }
+
+/** CSV 转义：字段里有逗号/引号/换行就包引号。 */
+    function csvCell(value) {
+      const text = String(value ?? '')
+      if (/[",\n\r]/.test(text)) return `"${text.replace(/"/g, '""')}"`
+      return text
+    }
+
+/**
+ * 导出三件套之一：txt 一行一词。
+ */
+    function exportTxt(entries) {
+      return entries.map((entry) => entry.head).join('\n')
+    }
+
+/**
+ * 导出三件套之二：CSV 带状态与释义。
+ */
+    function exportCsv(entries) {
+      const rows = [['word', 'state', 'book', 'gloss', 'note', 'due', 'addedAt']]
+      for (const entry of entries) {
+        rows.push([
+          entry.head,
+          entry.state,
+          entry.bookId,
+          entry.gloss,
+          entry.note,
+          String(entry.srs?.due ?? 0),
+          String(entry.addedAt ?? 0),
+        ])
+      }
+      return rows.map((row) => row.map(csvCell).join(',')).join('\r\n')
+    }
+
+/** 导出三件套之三：JSON 完整备份（可被导入页恢复）。 */
+    function exportJson(book) {
+      const payload = {
+        format: 'dsh-hover-dict/wordbook',
+        version: 2,
+        exportedAt: new Date().toISOString(),
+        books: typeof book?.listBooks === 'function' ? book.listBooks() : [],
+        words: typeof book?.exportAll === 'function' ? book.exportAll() : (book?.list?.() ?? []),
+      }
+      return JSON.stringify(payload, null, 2)
+    }
+
+/** 排序词条。 */
+    function sortEntries(entries, mode) {
+      const list = entries.slice()
+      if (mode === 'alpha') return list.sort((a, b) => a.head.localeCompare(b.head))
+      if (mode === 'stale') {
+        return list.sort((a, b) => {
+          const la = a.srs?.lastReviewAt || a.addedAt || 0
+          const lb = b.srs?.lastReviewAt || b.addedAt || 0
+          if (la !== lb) return la - lb
+          return a.head.localeCompare(b.head)
+        })
+      }
+      return list.sort((a, b) => (b.addedAt ?? 0) - (a.addedAt ?? 0))
+    }
+
+/**
+ * 词条搜过滤：词头或释义（含词库释义）。
+ */
+    function matchQuery(entry, query, dict) {
+      if (query === '') return true
+      const needle = query.toLowerCase()
+      if (entry.head.includes(needle)) return true
+      if (typeof entry.gloss === 'string' && entry.gloss.toLowerCase().includes(needle)) return true
+      const raw = dict?.entries?.[entry.head]
+      if (raw) {
+        try {
+          const brief = briefOf(raw)
+          if (typeof brief?.zh === 'string' && brief.zh.toLowerCase().includes(needle)) return true
+          if (typeof brief?.pos === 'string' && brief.pos.toLowerCase().includes(needle)) return true
+        } catch { /* 词库结构异常就只按词头匹配 */ }
+      }
+      return false
+    }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   主面板
+   ═══════════════════════════════════════════════════════════════════════ */
+
 /**
  * 设置面板组件。
  *
- * @param {object} props 宿主注入的 PropsRuntime，含 view 与 form
+ * @param {object} props 宿主注入的 PropsRuntime，含 view 与懒取的 wordbook / dict
  * @returns {import('react').ReactElement | null}
  */
-/** 生词本一次最多渲染多少个 chip。超出的用一句「还有 N 个」交代，不静默截断。 */
-    const CHIP_LIMIT = 120
-
     function SettingsPanel(props) {
-  // 只有当宿主**明确**说这是 summary 视图时才走摘要分支。
-  // 不能写成 `view !== 'page'`：宿主在某些版本里可能根本不传 view，
-  // 那样整个面板会一直显示成一行的摘要，用户以为没装。
+  // 只在宿主**明确**说这是 summary 视图时才走摘要分支（沿用 v1 判定）。
       if (props?.view === 'summary') {
         return h('div', { className: 'hds-hint' }, '点选查词 · 生词本 · 离线词库')
       }
 
       const storage = safeLocal()
       const [ux, setUx] = useState(() => loadUx(storage))
-      const [translator, setTranslator] = useState(() => readTranslator(storage))
-      const [importText, setImportText] = useState('')
+      const [tab, setTab] = useState('book')
       const [message, setMessage] = useState(null)
-      const [busy, setBusy] = useState('')
-      const [dictInfo, setDictInfo] = useState(null)
-      const [packs, setPacks] = useState(() => readPacks(storage))
-      const [clearPending, setClearPending] = useState(false)
-      const [maxHanRatio, setMaxHanRatio] = useState(() => readMaxHanRatioRaw(storage))
+      const [bookVersion, setBookVersion] = useState(0)
 
       const book = props?.wordbook
-      const apiPrefix = props?.apiPrefix ?? '/api/dsh-hover-dict'
-  // 词库包目录。宿主侧 dataDir 默认是包内 data/，这里写成用户能直接打开的绝对路径。
+      const dict = props?.dict
       const packsDir = props?.packsDir ?? '~/.dsh/profiles/desktop/node_modules/dsh-hover-dict/data/packs'
 
-  // 首次挂载读词库元信息
+  // 生词本一变就重读：stats/list 都是即时计算的，靠版本号触发重渲染
       useEffect(() => {
-        let alive = true
-        fetch(`${apiPrefix}/meta.json`)
-          .then((res) => (res.ok ? res.json() : null))
-          .then((data) => { if (alive && data) setDictInfo(data) })
-          .catch(() => { /* 拿不到就不显示 */ })
-        return () => { alive = false }
-      }, [apiPrefix])
+        if (!book || typeof book.subscribe !== 'function') return undefined
+        const off = book.subscribe(() => setBookVersion((n) => n + 1))
+        return () => { try { off() } catch { /* ignore */ } }
+      }, [book])
 
       const patchAppearance = (key, value) => {
         saveUx(storage, { appearance: { ...ux.appearance, [key]: value } })
@@ -4203,84 +7322,43 @@ window.__ModuleLoader__.load({
 
       const say = (text, tone = 'ok') => setMessage({ text, tone })
 
-      const onImport = () => {
-        const words = parseImportText(importText)
-        if (words.length === 0) { say('没有解析出任何单词', 'err'); return }
-        if (!book) { say('生词本还没就绪', 'err'); return }
-        setBusy('import')
-        book.importMany(words, 'import').then((added) => {
-          setBusy('')
-          setImportText('')
-          say(`导入完成：识别 ${words.length} 个，新增 ${added} 个（其余已存在）`)
-        }).catch(() => { setBusy(''); say('导入失败', 'err') })
-      }
+  /** 每次改动后重读一遍本地镜像（book 是外部可变对象）。 */
+      const bump = () => setBookVersion((n) => n + 1)
 
-      const onExport = () => {
-        if (!book) return
-        const text = book.list().map((item) => item.head).join('\n')
+      const stats = (() => {
         try {
-          const blob = new Blob([text], { type: 'text/plain;charset=utf-8' })
-          const url = URL.createObjectURL(blob)
-          const link = document.createElement('a')
-          link.href = url
-          link.download = `生词本-${new Date().toISOString().slice(0, 10)}.txt`
-          link.click()
-          setTimeout(() => URL.revokeObjectURL(url), 1000)
-          say(`已导出 ${book.list().length} 个词`)
-        } catch { say('导出失败', 'err') }
-      }
-
-  /**
-   * 清空生词本。
-   *
-   * 用内联二次确认，不用原生对话框 —— 系统弹窗会打断页面观感，
-   * 而且在设置页里弹一个原生弹窗像出错了。
-   */
-      const onClear = () => {
-        if (!book) return
-        const total = book.size()
-        if (total === 0) { say('生词本已经是空的', 'info'); return }
-        if (!clearPending) {
-          setClearPending(true)
-          say(`再点一次「确认清空」会删掉 ${total} 个生词，这个操作不能撤销。`, 'info')
-          return
+          return typeof book?.stats === 'function'
+            ? book.stats()
+            : { total: book?.size?.() ?? 0, byState: { new: 0, unknown: 0, fuzzy: 0, known: 0 }, dueToday: 0, addedToday: 0, reviewedToday: 0, streak: 0, days: [] }
+        } catch {
+          return { total: 0, byState: { new: 0, unknown: 0, fuzzy: 0, known: 0 }, dueToday: 0, addedToday: 0, reviewedToday: 0, streak: 0, days: [] }
         }
-        setClearPending(false)
-        setBusy('clear')
-        Promise.all(book.list().map((item) => book.remove(item.head))).then(() => {
-          setBusy('')
-          say('已清空')
-        })
-      }
+      })()
+      void bookVersion
 
-  /** 下载/卸载一个词库包。数据来自宿主，按包名请求。 */
-      const onTogglePack = (pack) => {
-        if (pack.builtin) return
-        setBusy(pack.id)
-        const next = { ...packs }
-        if (next[pack.id]) delete next[pack.id]
-        else next[pack.id] = { installedAt: Date.now() }
-        writePacks(storage, next)
-        setPacks(next)
-        setBusy('')
-        say(next[pack.id] ? `已启用「${pack.name}」` : `已停用「${pack.name}」`)
-      }
-
-      const bookSize = book?.size?.() ?? 0
-      const bookWords = book?.list?.() ?? []
-
-  /* ── 用共用原语组装 ── */
       const P = makePrimitives(h)
-      const { Card, Button, Switch, Input, Select, Badge, Note, Field, PageHeader, Page, GAP, C, FS } = P
+      const { Card, Button, Switch, Input, Select, Badge, Note, Field, PageHeader, Page,
+        Tabs, Stat, Chip, Checkbox, Segment, GAP, FS, C } = P
 
-      const section = (key, title, hint, children, action) => h(Card, {
-        key,
-        title,
-        hint,
-        action,
-      }, children)
-
+      const section = (key, title, hint, children, action) => h(Card, { key, title, hint, action }, children)
       const field = (key, label, control, hint) => h(Field, { key, label, hint }, control)
+
+      const tabs = [
+        { id: 'book', label: '生词本', badge: stats.total > 0 ? String(stats.total) : undefined },
+        { id: 'review', label: '复习', badge: stats.dueToday > 0 ? String(stats.dueToday) : undefined },
+        { id: 'import', label: '导入' },
+        { id: 'appearance', label: '外观与交互' },
+        { id: 'youdao', label: '有道同步' },
+      ]
+
+      const body = []
+      if (tab === 'book') body.push(bookTab({ h, P, book, dict, stats, say, bump, storage, bookVersion }))
+      else if (tab === 'review') body.push(h(ReviewTab, { key: 'review', h, P, book, dict, stats, say, bump }))
+      else if (tab === 'import') body.push(h(ImportTab, { key: 'import', h, P, book, dict, say, bump }))
+      else if (tab === 'appearance') body.push(appearanceTab({ h, P, ux, patchAppearance, dictInfo: props?.dictInfo, packsDir, storage, section, field, setUx }))
+      else body.push(h(YoudaoTab, {
+        key: 'youdao', h, P, book, say, onGoBook: () => { setTab('book'); setMessage(null) },
+      }))
 
       return h(Page, null, [
         h(PageHeader, {
@@ -4289,150 +7367,1006 @@ window.__ModuleLoader__.load({
           desc: '在对话里点击或划选英文单词看释义，划选纯英文句子翻成中文。生词本会自动高亮你已经背过的词。',
           extra: [
             h(Badge, { key: 'b', text: '离线', tone: 'success' }),
-            h(Badge, { key: 'c', text: `${(dictInfo?.entries ?? 20499).toLocaleString()} 词条`, tone: 'neutral' }),
+            h(Badge, { key: 'c', text: `${stats.total} 词`, tone: 'neutral' }),
           ],
         }),
 
-    /* 翻译接口 */
-        section('tr', '翻译接口',
-          '划选纯英文句子时用哪个服务。三项都不需要额外密钥。',
-          [
-            field('f1', '翻译服务', h(Select, {
-              value: translator,
-              options: [
-                { value: 'auto', label: '自动（先用 Google，失败换 Bing）' },
-                { value: 'google', label: 'Google 翻译' },
-                { value: 'bing', label: 'Bing 翻译' },
-                { value: 'off', label: '关闭句子翻译' },
-              ],
-              onChange: (value) => { setTranslator(value); writeTranslator(storage, value) },
+        h('div', { key: 'tabs' }, h(Tabs, {
+          items: tabs, value: tab, onChange: (id) => { setTab(id); setMessage(null) }, label: '英语翻译分页',
+        })),
+
+        ...body,
+
+        message !== null
+          ? h(Note, {
+            key: 'msg',
+            tone: message.tone === 'err' ? 'err' : message.tone === 'info' ? 'info' : 'ok',
+            text: message.text,
+          })
+          : null,
+      ])
+    }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Tab 1：生词本管理台
+   ═══════════════════════════════════════════════════════════════════════ */
+
+    function bookTab(ctx) {
+      const { h, P, book, dict, stats, say, bump, storage } = ctx
+      const { Card, Button, Input, Select, Badge, Note, Stat, Chip, Checkbox, GAP, FS, C } = P
+
+      const [query, setQuery] = useState('')
+      const [stateFilter, setStateFilter] = useState('all')
+      const [bookFilter, setBookFilter] = useState('all')
+      const [sortMode, setSortMode] = useState('recent')
+      const [page, setPage] = useState(0)
+      const [expanded, setExpanded] = useState(null)
+      const [selected, setSelected] = useState([])
+      const [removing, setRemoving] = useState(null)
+      const [noteEditing, setNoteEditing] = useState(null)
+      const [noteDraft, setNoteDraft] = useState('')
+
+      const all = (() => {
+        try { return typeof book?.list === 'function' ? book.list() : [] } catch { return [] }
+      })()
+      const books = (() => {
+        try { return typeof book?.listBooks === 'function' ? book.listBooks() : [] } catch { return [] }
+      })()
+
+      const filtered = all.filter((entry) => {
+        if (stateFilter !== 'all' && entry.state !== stateFilter) return false
+        if (bookFilter !== 'all' && !booksOfEntry(entry).includes(bookFilter)) return false
+        return matchQuery(entry, query.trim(), dict)
+      })
+      const sorted = sortEntries(filtered, sortMode)
+      const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE))
+      const safePage = Math.min(page, pageCount - 1)
+      const rows = sorted.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE)
+      const pageHeads = rows.map((row) => row.head)
+      const allOnPageSelected = pageHeads.length > 0 && pageHeads.every((head) => selected.includes(head))
+
+      const toggleSelect = (head, on) => {
+        setSelected((prev) => {
+          if (on) return prev.includes(head) ? prev : [...prev, head]
+          return prev.filter((item) => item !== head)
+        })
+      }
+
+      const onBatchState = (state) => {
+        if (selected.length === 0 || typeof book?.setState !== 'function') return
+        Promise.all(selected.map((head) => book.setState(head, state)))
+          .then(() => { say(`已把 ${selected.length} 个词转为「${stateLabel(state)}」`); setSelected([]); bump() })
+          .catch(() => say('批量转状态失败', 'err'))
+      }
+
+      const onBatchMove = (bookId) => {
+        if (selected.length === 0 || typeof book?.importMany !== 'function') return
+        book.importMany(selected, 'manual', { bookId })
+          .then(() => { say(`已把 ${selected.length} 个词加入所选词书`); setSelected([]); bump() })
+          .catch(() => say('移入词书失败', 'err'))
+      }
+
+      const onBatchRemove = () => {
+        if (selected.length === 0 || typeof book?.remove !== 'function') return
+        Promise.all(selected.map((head) => book.remove(head)))
+          .then(() => { say(`已移出 ${selected.length} 个词`); setSelected([]); setRemoving(null); bump() })
+          .catch(() => say('移出失败', 'err'))
+      }
+
+      const onExport = (kind) => {
+        const entries = typeof book?.exportAll === 'function' ? book.exportAll() : all
+        const stamp = new Date().toISOString().slice(0, 10)
+        let text = ''
+        let name = ''
+        let mime = 'text/plain;charset=utf-8'
+        if (kind === 'txt') { text = exportTxt(entries); name = `生词本-${stamp}.txt` }
+        else if (kind === 'csv') { text = exportCsv(entries); name = `生词本-${stamp}.csv`; mime = 'text/csv;charset=utf-8' }
+        else { text = exportJson(book); name = `生词本备份-${stamp}.json`; mime = 'application/json;charset=utf-8' }
+        if (entries.length === 0) { say('生词本还是空的，没有可导出的内容', 'info'); return }
+        if (downloadText(text, name, mime)) say(`已导出 ${entries.length} 个词（${name}）`)
+        else say('导出失败：浏览器不让下载', 'err')
+      }
+
+      const onClear = () => {
+        if (typeof book?.remove !== 'function') return
+        const total = all.length
+        if (total === 0) { say('生词本已经是空的', 'info'); return }
+        if (removing !== '__clear__') {
+          setRemoving('__clear__')
+          say(`再点一次「确认清空」会删掉 ${total} 个生词，这个操作不能撤销。`, 'info')
+          return
+        }
+        setRemoving(null)
+        Promise.all(all.map((entry) => book.remove(entry.head)))
+          .then(() => { say('已清空'); setSelected([]); bump() })
+          .catch(() => say('清空失败', 'err'))
+      }
+
+      const stateChips = [
+        { id: 'all', label: '全部', count: all.length },
+        { id: 'new', label: '未学', count: stats.byState.new ?? 0 },
+        { id: 'unknown', label: '不认识', count: stats.byState.unknown ?? 0 },
+        { id: 'fuzzy', label: '记错', count: stats.byState.fuzzy ?? 0 },
+        { id: 'known', label: '已掌握', count: stats.byState.known ?? 0 },
+      ]
+
+      const dueText = (entry) => dueLabel(entry.srs?.due ?? 0)
+
+      return h('div', { key: 'booktab', style: { display: 'flex', flexDirection: 'column', gap: GAP.md } }, [
+    /* 统计条 */
+        h('div', { key: 'stats', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
+          h(Stat, { key: 's1', label: '总词数', value: stats.total }),
+          h(Stat, { key: 's2', label: '今日到期', value: stats.dueToday, tone: stats.dueToday > 0 ? 'accent' : 'neutral' }),
+          h(Stat, { key: 's3', label: '已掌握', value: stats.byState.known ?? 0, tone: 'success' }),
+          h(Stat, { key: 's4', label: '连续学习', value: `${stats.streak ?? 0} 天`, tone: stats.streak > 0 ? 'success' : 'neutral' }),
+        ]),
+
+    /* 状态占比条 + 30 天打卡 */
+        h(Card, { key: 'chart', title: '掌握度与打卡', hint: '四态占比横条；下面 30 格是最近 30 天的复习次数，颜色越深复习越多。' }, [
+          h(StatusBar, { key: 'bar', h, P, byState: stats.byState, total: stats.total }),
+          h(HeatGrid, { key: 'heat', h, P, days: stats.days, }),
+        ]),
+
+    /* 工具行 */
+        h(Card, { key: 'tools', title: '词表', hint: null }, [
+          h('div', { key: 'row1', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap', alignItems: 'center' } }, [
+            h('div', { key: 'q', style: { flex: '1 1 200px', minWidth: 160 } }, h(Input, {
+              type: 'search',
+              value: query,
+              placeholder: '按词头或释义搜索',
+              onChange: (value) => { setQuery(value); setPage(0) },
+            })),
+            h(Select, {
+              key: 'bk',
+              value: bookFilter,
+              onChange: (value) => { setBookFilter(value); setPage(0) },
+              options: [{ value: 'all', label: '全部词书' }, ...books.map((item) => ({ value: item.id, label: item.name }))],
+            }),
+            h(Select, {
+              key: 'sort',
+              value: sortMode,
+              onChange: (value) => { setSortMode(value); setPage(0) },
+              options: SORT_OPTIONS.map((item) => ({ value: item.id, label: item.label })),
+            }),
+          ]),
+
+          h('div', { key: 'row2', style: { display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' } },
+            stateChips.map((chip) => h(Chip, {
+              key: chip.id, label: chip.label, count: chip.count, active: stateFilter === chip.id,
+              onClick: () => { setStateFilter(chip.id); setPage(0) },
+            }))),
+
+      /* 批量操作 */
+          selected.length > 0
+            ? h('div', { key: 'batch', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap', alignItems: 'center', padding: '8px 12px', borderRadius: 10, border: `1px solid ${C.border1}`, background: C.bg1 } }, [
+              h('span', { key: 'n', style: { fontSize: FS.small, color: C.textDim } }, `已选 ${selected.length} 个`),
+              h(Button, { key: 'b1', label: '转为已掌握', size: 'sm', onClick: () => onBatchState('known') }),
+              h(Select, {
+                key: 'bk2',
+                value: '',
+                onChange: (value) => { if (value !== '') onBatchMove(value) },
+                options: [{ value: '', label: '移入词书…' }, ...books.map((item) => ({ value: item.id, label: item.name }))],
+              }),
+              removing === '__batch__'
+                ? h(Button, { key: 'b2', label: '确认移出', variant: 'primary', size: 'sm', onClick: onBatchRemove })
+                : h(Button, { key: 'b2', label: '移出', variant: 'danger', size: 'sm', onClick: () => { setRemoving('__batch__'); say(`再点一次「确认移出」会删掉这 ${selected.length} 个词。`, 'info') } }),
+              removing === '__batch__'
+                ? h(Button, { key: 'b3', label: '取消', variant: 'ghost', size: 'sm', onClick: () => setRemoving(null) })
+                : null,
+            ])
+            : null,
+
+      /* 词表 */
+          sorted.length === 0
+            ? h('p', { key: 'empty', style: { margin: 0, fontSize: FS.small, lineHeight: 1.9, color: C.textFaint } },
+              all.length === 0
+                ? '还没有生词。在对话里点开一个词，点标题旁边的 ☆ 就能收进来。'
+                : '当前筛选下没有词。换个状态或词书试试。')
+            : h('div', { key: 'table', className: 'hds-table' }, [
+              h('div', { key: 'thead', className: 'hds-thead' }, [
+                h('span', { key: 'c' }, h(Checkbox, {
+                  checked: allOnPageSelected,
+                  label: '全选本页',
+                  onChange: (on) => {
+                    if (!on) setSelected((prev) => prev.filter((head) => !pageHeads.includes(head)))
+                    else setSelected((prev) => [...new Set([...prev, ...pageHeads])])
+                  },
+                })),
+                h('span', { key: 'w' }, '词头'),
+                h('span', { key: 's' }, '状态'),
+                h('span', { key: 'd' }, '下次复习'),
+                h('span', { key: 'r' }, '来源'),
+                h('span', { key: 'o', style: { textAlign: 'right' } }, '操作'),
+              ]),
+              ...rows.map((entry) => {
+                const open = expanded === entry.head
+                const node = h('div', { key: `row-${entry.head}`, className: 'hds-trow' }, [
+                  h('span', { key: 'c' }, h(Checkbox, {
+                    checked: selected.includes(entry.head),
+                    label: `选择 ${entry.head}`,
+                    onChange: (on) => toggleSelect(entry.head, on),
+                  })),
+                  h('span', { key: 'w', className: 'hds-cell-head' }, h('button', {
+                    type: 'button',
+                    onClick: () => setExpanded(open ? null : entry.head),
+                  }, entry.head)),
+                  h('span', { key: 's' }, h(Badge, { text: stateLabel(entry.state), tone: stateTone(entry.state) })),
+                  h('span', { key: 'd', className: 'hds-cell-dim' }, dueText(entry)),
+                  h('span', { key: 'r', className: 'hds-cell-dim' }, SOURCE_LABEL[entry.source] ?? entry.source),
+                  h('span', { key: 'o', className: 'hds-cell-ops' }, [
+                    h(Select, {
+                      key: 'st',
+                      value: entry.state,
+                      onChange: (value) => {
+                        Promise.resolve(book.setState(entry.head, value))
+                          .then(() => { say(`「${entry.head}」转为「${stateLabel(value)}」`); bump() })
+                          .catch(() => say('转状态失败', 'err'))
+                      },
+                      options: Object.keys(STATE_META).map((id) => ({ value: id, label: stateLabel(id) })),
+                    }),
+                    h(Button, {
+                      key: 'note', label: noteEditing === entry.head ? '存备注' : '备注', size: 'sm', variant: 'ghost',
+                      onClick: () => {
+                        if (noteEditing === entry.head) {
+                          Promise.resolve(book.setNote(entry.head, noteDraft))
+                            .then(() => { say('备注已保存'); setNoteEditing(null); bump() })
+                            .catch(() => say('备注保存失败', 'err'))
+                        } else {
+                          setNoteEditing(entry.head)
+                          setNoteDraft(entry.note ?? '')
+                        }
+                      },
+                    }),
+                    removing === entry.head
+                      ? h(Button, { key: 'x', label: '确认移出', variant: 'primary', size: 'sm', onClick: () => {
+                        Promise.resolve(book.remove(entry.head))
+                          .then(() => { say(`已移出「${entry.head}」`); setRemoving(null); setExpanded(null); bump() })
+                          .catch(() => say('移出失败', 'err'))
+                      } })
+                      : h(Button, { key: 'x', label: '移出', variant: 'danger', size: 'sm', onClick: () => { setRemoving(entry.head); say(`再点一次「确认移出」会删掉「${entry.head}」`, 'info') } }),
+                  ]),
+                ])
+                if (!open) return node
+                return [
+                  node,
+                  h('div', { key: `det-${entry.head}`, className: 'hds-trow', style: { display: 'block', padding: '0 12px 10px' } },
+                    h(EntryDetail, { h, P, entry, dict, noteEditing, noteDraft, setNoteDraft })),
+                ]
+              }).flat(),
+            ]),
+
+      /* 分页 + 导出 */
+          sorted.length > PAGE_SIZE
+            ? h('div', { key: 'pager', className: 'hds-pager' }, [
+              h('span', { key: 'info' }, `第 ${safePage + 1}/${pageCount} 页 · 共 ${sorted.length} 个`),
+              h('span', { key: 'btns', style: { display: 'flex', gap: GAP.xs } }, [
+                h(Button, { key: 'prev', label: '上一页', size: 'sm', disabled: safePage <= 0, onClick: () => setPage(Math.max(0, safePage - 1)) }),
+                h(Button, { key: 'next', label: '下一页', size: 'sm', disabled: safePage >= pageCount - 1, onClick: () => setPage(Math.min(pageCount - 1, safePage + 1)) }),
+              ]),
+            ])
+            : h('div', { key: 'pager1', className: 'hds-pager' }, [
+              h('span', { key: 'info' }, sorted.length === 0 ? '没有词' : `共 ${sorted.length} 个词`),
+            ]),
+
+          h('div', { key: 'exports', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
+            h(Button, { key: 't', label: '导出 txt', size: 'sm', disabled: all.length === 0, onClick: () => onExport('txt') }),
+            h(Button, { key: 'c', label: '导出 CSV（带状态与释义）', size: 'sm', disabled: all.length === 0, onClick: () => onExport('csv') }),
+            h(Button, { key: 'j', label: '导出 JSON 备份', size: 'sm', disabled: all.length === 0, onClick: () => onExport('json') }),
+            h(Button, {
+              key: 'clear',
+              label: removing === '__clear__' ? '确认清空' : '清空生词本',
+              variant: removing === '__clear__' ? 'primary' : 'danger',
+              size: 'sm',
+              disabled: all.length === 0,
+              onClick: onClear,
+            }),
+            removing === '__clear__'
+              ? h(Button, { key: 'cancel', label: '取消', variant: 'ghost', size: 'sm', onClick: () => { setRemoving(null); say('已取消', 'info') } })
+              : null,
+          ]),
+        ]),
+      ])
+    }
+
+/** 四态占比横条。纯 CSS，不引图表库。 */
+    function StatusBar(props) {
+      const { h, P, byState, total } = props
+      const { C } = P
+      const colors = {
+        new: `color-mix(in srgb, ${C.textFaint} 55%, transparent)`,
+        unknown: C.danger,
+        fuzzy: C.warn,
+        known: C.success,
+      }
+      const safeTotal = total > 0 ? total : 1
+      const order = ['known', 'fuzzy', 'unknown', 'new']
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } }, [
+        h('div', { key: 'bar', className: 'hds-bar' }, order.map((state) => {
+          const value = byState?.[state] ?? 0
+          if (value === 0) return null
+          return h('span', {
+            key: state,
+            title: `${stateLabel(state)} ${value}`,
+            style: { width: `${(value / safeTotal) * 100}%`, background: colors[state] },
+          })
+        })),
+        h('div', { key: 'legend', style: { display: 'flex', gap: 14, flexWrap: 'wrap', fontSize: FS.small, color: C.textDim } }, order.map((state) => h('span', {
+          key: state,
+          style: { display: 'inline-flex', alignItems: 'center', gap: 5 },
+        }, [
+          h('span', { key: 'd', style: { width: 8, height: 8, borderRadius: 2, background: colors[state] } }),
+          `${stateLabel(state)} ${byState?.[state] ?? 0}`,
+        ]))),
+      ])
+    }
+
+/** 近 30 天打卡格子：颜色深浅 = 当日复习数。 */
+    function HeatGrid(props) {
+      const { h, P, days } = props
+      const { C } = P
+      const list = Array.isArray(days) ? days : []
+      const max = list.reduce((acc, day) => Math.max(acc, day.reviewed ?? 0), 0)
+      const cellBg = (count) => {
+        if (!count) return `color-mix(in srgb, ${C.textFaint} 12%, transparent)`
+        const ratio = max > 0 ? count / max : 1
+        return `color-mix(in srgb, ${C.success} ${Math.round(18 + ratio * 62)}%, transparent)`
+      }
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: 8 } }, [
+        h('div', { key: 'grid', className: 'hds-heat' }, list.map((day, index) => h('span', {
+          key: day.date ?? index,
+          className: 'hds-heat-cell',
+          title: `${day.date} · 复习 ${day.reviewed ?? 0} · 新增 ${day.added ?? 0}`,
+          style: { background: cellBg(day.reviewed ?? 0) },
+        }))),
+        h('div', { key: 'legend', className: 'hds-heat-legend' }, [
+          h('span', { key: 'l' }, '30 天前'),
+          h('span', { key: 'a', style: { width: 9, height: 9, borderRadius: 2, background: cellBg(1) } }),
+          h('span', { key: 'b', style: { width: 9, height: 9, borderRadius: 2, background: cellBg(max || 4) } }),
+          h('span', { key: 'r' }, '今天'),
+        ]),
+      ])
+    }
+
+/** 行内详情：词库释义 / 音标 / 例句；查不到就老实说查不到（CETgo 口径）。 */
+    function EntryDetail(props) {
+      const { h, P, entry, dict, noteEditing, noteDraft, setNoteDraft } = props
+      const { Input, Note, C, FS } = P
+
+      let described = null
+      const raw = dict?.entries?.[normalizeKey(entry.head)]
+      if (raw) {
+        try { described = describeEntry(raw) } catch { described = null }
+      }
+      const seen = entry.review?.seen ?? 0
+      const lastSeen = entry.review?.lastSeenAt ?? 0
+      const seenText = seen > 0
+        ? `查过 ${seen} 次 · 最近 ${lastSeen > 0 ? dueLabel(lastSeen) : '未知'}`
+        : '还没查过'
+
+      const rows = []
+      if (described && described.senses.length > 0) {
+        rows.push(h('div', { key: 'senses', className: 'hds-detail-row' }, [
+          h('span', { key: 'k', className: 'hds-detail-key' }, '释义'),
+          h('span', { key: 'v', className: 'hds-detail-val' }, described.senses.slice(0, 3).map((sense, index) => h('div', {
+            key: index, className: 'hds-detail-sense',
+          }, [
+            sense.posLabel ? h('span', { key: 'p', className: 'hds-detail-pos' }, sense.posLabel) : null,
+            h('span', { key: 'z' }, sense.zh.join('；')),
+          ]))),
+        ]))
+      } else if (typeof entry.gloss === 'string' && entry.gloss.trim() !== '') {
+        rows.push(h('div', { key: 'gloss', className: 'hds-detail-row' }, [
+          h('span', { key: 'k', className: 'hds-detail-key' }, '释义'),
+          h('span', { key: 'v', className: 'hds-detail-val' }, entry.gloss),
+        ]))
+      } else {
+        rows.push(h(Note, { key: 'nodict', tone: 'info', text: '词库未收录，暂无释义（可以自己写一条备注）' }))
+      }
+
+      if (described && described.examples.length > 0) {
+        const sample = described.examples[0]
+        rows.push(h('div', { key: 'ex', className: 'hds-detail-row' }, [
+          h('span', { key: 'k', className: 'hds-detail-key' }, '例句'),
+          h('span', { key: 'v', className: 'hds-detail-val' }, `${sample?.en ?? ''}　${sample?.zh ?? ''}`),
+        ]))
+      }
+
+      rows.push(h('div', { key: 'meta', className: 'hds-detail-row' }, [
+        h('span', { key: 'k', className: 'hds-detail-key' }, '记录'),
+        h('span', { key: 'v', className: 'hds-detail-val', style: { fontSize: FS.small, color: C.textDim } },
+          `${seenText} · 加于 ${new Date(entry.addedAt ?? 0).toLocaleDateString()} · 复习 ${entry.srs?.reps ?? 0} 次对 / ${entry.srs?.lapses ?? 0} 次错`),
+      ]))
+
+      if (noteEditing === entry.head) {
+        rows.push(h(Input, {
+          key: 'noteinput',
+          value: noteDraft,
+          placeholder: '写一条备注（最多 500 字）',
+          onChange: setNoteDraft,
+        }))
+      } else if ((entry.note ?? '') !== '') {
+        rows.push(h('div', { key: 'note', className: 'hds-detail-row' }, [
+          h('span', { key: 'k', className: 'hds-detail-key' }, '备注'),
+          h('span', { key: 'v', className: 'hds-detail-val' }, entry.note),
+        ]))
+      }
+
+      return h('div', { className: 'hds-detail' }, rows)
+    }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Tab 2：复习卡
+   ═══════════════════════════════════════════════════════════════════════ */
+
+    function ReviewTab(props) {
+      const { h, P, book, dict, stats, say, bump } = props
+      const { Card, Button, Note, Stat, Chip, Segment, GAP, FS, C } = P
+
+      const [direction, setDirection] = useState('en-zh')
+      const [filter, setFilter] = useState('all')
+      const [bookFilter, setBookFilter] = useState('all')
+      const [flipped, setFlipped] = useState(false)
+      const [index, setIndex] = useState(0)
+      const [answered, setAnswered] = useState([])
+      const [roundDone, setRoundDone] = useState(false)
+      const [queue, setQueue] = useState(null)
+
+      const books = (() => {
+        try { return book?.listBooks?.() ?? [] } catch { return [] }
+      })()
+
+  /** 造一轮队列（到期 + 筛选 + 方向）。 */
+      const buildQueue = (ahead = false) => {
+        let base = []
+        try {
+          if (ahead) base = aheadQueue(typeof book?.list === 'function' ? book.list() : [], AHEAD_COUNT)
+          else base = typeof book?.dueQueue === 'function' ? book.dueQueue() : []
+        } catch { base = [] }
+        const filtered = filterQueue(base, { state: filter, bookId: bookFilter })
+        return queueForDirection(filtered, direction, dict)
+      }
+
+      const current = queue === null ? null : (queue[index] ?? null)
+      const remaining = queue === null ? 0 : Math.max(0, queue.length - index)
+
+      const startRound = (ahead = false) => {
+        setQueue(buildQueue(ahead))
+        setIndex(0)
+        setAnswered([])
+        setRoundDone(false)
+        setFlipped(false)
+      }
+
+      const grade = (value) => {
+        if (!current || typeof book?.grade !== 'function') return
+        Promise.resolve(book.grade(current.head, value))
+          .then(() => {
+            setAnswered((prev) => [...prev, { head: current.head, grade: value }])
+            setFlipped(false)
+            const next = index + 1
+            if (queue && next >= queue.length) setRoundDone(true)
+            setIndex(next)
+            bump()
+          })
+          .catch(() => say('评分失败', 'err'))
+      }
+
+  /* 键盘：空格/回车翻面，1/2/3 评分，Esc 退出本轮 */
+      useEffect(() => {
+        const onKey = (event) => {
+          if (!shouldHandleKey(event)) return
+          const action = actionForKey(event.key)
+          if (action === '') return
+          event.preventDefault?.()
+          if (action === 'exit') { setRoundDone(false); setQueue(null); return }
+          if (!current) return
+          if (action === 'flip') { setFlipped((prev) => !prev); return }
+          grade(action)
+        }
+        if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+          window.addEventListener('keydown', onKey)
+          return () => { try { window.removeEventListener('keydown', onKey) } catch { /* ignore */ } }
+        }
+        return undefined
+      }, [current, queue, index])
+
+      const summary = roundSummary(answered)
+      const back = current && flipped ? cardBackFor(current.head, dict) : null
+      const brief = current && direction === 'zh-en' ? briefTextFor(current, dict) : ''
+
+  /* ── 本轮结束 ── */
+      if (roundDone) {
+        return h('div', { style: { display: 'flex', flexDirection: 'column', gap: GAP.md } }, [
+          h(Card, { key: 'done', title: '本轮结束', hint: `复习了 ${summary.total} 个词。` }, [
+            h('div', { key: 'stats', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
+              h(Stat, { key: 'a', label: '正确率', value: `${summary.accuracy}%`, tone: summary.accuracy >= 70 ? 'success' : 'warn' }),
+              h(Stat, { key: 'b', label: '认识', value: summary.good, tone: 'success' }),
+              h(Stat, { key: 'c', label: '记错', value: summary.hard, tone: 'warn' }),
+              h(Stat, { key: 'd', label: '不认识', value: summary.again, tone: 'danger' }),
+            ]),
+            h(StatusBar, { key: 'bar', h, P, byState: stats.byState, total: stats.total }),
+            h('div', { key: 'btns', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
+              h(Button, { key: 'again', label: '再来一轮', variant: 'primary', onClick: () => startRound(false) }),
+            ]),
+          ]),
+        ])
+      }
+
+  /* ── 未开始 / 队列空 ── */
+      if (queue === null || queue.length === 0) {
+        const empty = queue !== null && queue.length === 0
+        return h('div', { style: { display: 'flex', flexDirection: 'column', gap: GAP.md } }, [
+          h(Card, {
+            key: 'start',
+            title: empty ? '今天没有到期的词' : '开始复习',
+            hint: empty ? '队列是空的。可以提前复习最早到期的词，或去导入新词。' : `今日到期 ${stats.dueToday} 个。空格翻面，1/2/3 评分。`,
+          }, [
+            h('div', { key: 'stats', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
+              h(Stat, { key: 'a', label: '今日到期', value: stats.dueToday, tone: 'accent' }),
+              h(Stat, { key: 'b', label: '总词数', value: stats.total }),
+              h(Stat, { key: 'c', label: '连续学习', value: `${stats.streak ?? 0} 天`, tone: 'success' }),
+            ]),
+            h('div', { key: 'filters', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap', alignItems: 'center' } }, [
+              h(Segment, { key: 'dir', items: DIRECTIONS, value: direction, onChange: setDirection, label: '出题方向' }),
+              h('span', { key: 'sep', style: { fontSize: FS.small, color: C.textDim } }, '筛选'),
+              ...REVIEW_FILTERS.map((item) => h(Chip, {
+                key: item.id, label: item.label, active: filter === item.id,
+                onClick: () => setFilter(item.id),
+              })),
+              books.length > 1
+                ? h('select', {
+                  key: 'bk',
+                  value: bookFilter,
+                  onChange: (event) => setBookFilter(event.target.value),
+                  style: { font: 'inherit', fontSize: FS.body, padding: '5px 9px', borderRadius: 8, border: `1px solid ${C.border2}`, background: C.bgBase, color: C.text },
+                }, [{ value: 'all', label: '全部词书' }, ...books.map((item) => ({ value: item.id, label: item.name }))].map((option) => h('option', { key: option.value, value: option.value }, option.label)))
+                : null,
+            ]),
+            h('div', { key: 'btns', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
+              h(Button, { key: 'go', label: empty ? '提前复习最早到期的 20 个' : '开始复习', variant: 'primary', onClick: () => startRound(empty) }),
+            ]),
+            stats.total === 0
+              ? h(Note, { key: 'tip', tone: 'info', text: '生词本还是空的。先在对话里收藏几个词，或去「导入」页签批量加词。' })
+              : null,
+          ]),
+        ])
+      }
+
+  /* ── 卡片 ── */
+      const front = current.head
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: GAP.md } }, [
+        h(Card, { key: 'card', title: '复习', hint: null }, [
+          h('div', { key: 'top', className: 'hds-review-top' }, [
+            h('span', { key: 'l', style: { fontSize: FS.small, color: C.textDim } },
+              `今日到期 ${stats.dueToday} 个 · 本轮已复习 ${summary.total} 个 · 剩余 ${remaining}`),
+            h(Segment, { key: 'dir', items: DIRECTIONS, value: direction, onChange: (id) => { setDirection(id); setQueue(null) }, label: '出题方向' }),
+          ]),
+
+          h('div', {
+            key: 'stage',
+            className: 'hds-cardstage',
+            role: 'button',
+            tabIndex: 0,
+            onClick: () => setFlipped((prev) => !prev),
+          }, flipped
+            ? h('div', { key: 'back', className: 'hds-cardstage-back' }, [
+          // 背面内容块（词头 + 🔊 + 义项≤3 + 例句）整段复用 review.js 的 ReviewCardBack。
+          // 它与 card.js 的卡片背面共用同一份实现，发音按钮跟着一起来了（§E1），
+          // 不需要在设置页再维护一套「词头 + 释义 + 例句」的模板。
+              h(ReviewCardBack, {
+                key: 'back',
+                word: front,
+                back,
+                gloss: current.gloss ?? '',
+                size: 'md',
+                P,
+              }),
+          // 评分键盘提示留在外层：ReviewCardBack 只画「这个词长什么样」，
+          // 不掺入复习流程的交互说明（那些属于 ReviewTab 的职责）。
+              h('div', { key: 'tip', className: 'hds-cardstage-tip' }, '1 ✗ 不认识 · 2 ↻ 记错 · 3 ✓ 认识 · 空格再翻一次'),
+            ])
+            : h('div', { key: 'front', style: { display: 'flex', flexDirection: 'column', gap: 10, alignItems: 'center' } }, [
+              h('div', { key: 'w', className: 'hds-cardstage-word' }, direction === 'zh-en' ? (brief || '（无释义）') : front),
+              h('div', { key: 'tip', className: 'hds-cardstage-tip' }, '点卡片或按空格翻面'),
+            ])),
+        ]),
+
+        h('div', { key: 'grades', className: 'hds-grade-row' }, GRADE_BUTTONS.map((item) => h('button', {
+          key: item.grade,
+          type: 'button',
+          className: `hds-grade-btn hds-grade-${item.grade}`,
+          onClick: () => grade(item.grade),
+        }, [
+          h('span', { key: 'l', style: { fontSize: FS.body } }, item.label),
+          h('small', { key: 'k', style: { fontSize: 10.5, opacity: 0.7 } }, `键 ${item.key}`),
+        ]))),
+      ])
+    }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Tab 3：粘贴导入
+   ═══════════════════════════════════════════════════════════════════════ */
+
+    function ImportTab(props) {
+      const { h, P, book, dict, say, bump } = props
+      const { Card, Button, Input, Select, Badge, Note, Field, GAP, FS, C } = P
+
+      const [text, setText] = useState('')
+      const [bookId, setBookId] = useState('default')
+      const [newBookName, setNewBookName] = useState('')
+      const [parsed, setParsed] = useState(null)
+      const [showSkipped, setShowSkipped] = useState(false)
+      const [busy, setBusy] = useState('')
+      const [fileName, setFileName] = useState('')
+
+      const books = (() => {
+        try { return book?.listBooks?.() ?? [] } catch { return [] }
+      })()
+
+      const probes = {
+        isDup: (head) => (typeof book?.has === 'function' ? book.has(head) : false),
+        isKnown: (head) => Boolean(dict?.entries?.[head]),
+      }
+
+      const onParse = () => {
+        if (text.trim() === '') { say('先粘贴或用文件读入一些内容', 'info'); return }
+        let result = null
+        try { result = parseImportDetailed(text, probes) } catch { result = null }
+        if (!result) { say('解析失败：这段内容读不出词', 'err'); return }
+        setParsed(result)
+        setShowSkipped(false)
+        const sum = summarizeImport(result)
+        say(`识别 ${sum.total} 个词：新增 ${sum.fresh}、已存在 ${sum.dup}、词库未收录 ${sum.nodict}${sum.skipped > 0 ? `；跳过 ${sum.skipped} 行` : ''}`, 'info')
+      }
+
+      const onConfirm = () => {
+        if (!parsed || parsed.words.length === 0) return
+        if (typeof book?.importMany !== 'function') { say('生词本还没就绪', 'err'); return }
+        setBusy('import')
+        const targetBook = newBookName.trim() !== '' ? null : bookId
+        const prepare = newBookName.trim() !== ''
+          ? Promise.resolve(typeof book.createBook === 'function' ? book.createBook(newBookName.trim()) : null)
+          : Promise.resolve(null)
+        prepare.then((created) => {
+          const id = created?.id ?? targetBook ?? 'default'
+      // 备份恢复：带 record 的行整条传下去，保住 state/srs/bookId
+          const records = parsed.words
+            .filter((row) => row.status !== 'dup')
+            .map((row) => {
+              const gloss = glossText(row)
+              if (row.record && typeof row.record === 'object') return { ...row.record, head: row.head, gloss: row.record.gloss || gloss }
+              return { head: row.head, gloss }
+            })
+          return book.importMany(records, 'import', { bookId: id }).then((added) => {
+            bump()
+            setBusy('')
+            setParsed(null)
+            setText('')
+            setFileName('')
+            setNewBookName('')
+            say(`导入完成：新增 ${added} 个${created ? `，新词书「${created.name}」已建立` : ''}`)
+          })
+        }).catch(() => { setBusy(''); say('导入失败', 'err') })
+      }
+
+      const onFile = (event) => {
+        const file = event?.target?.files?.[0]
+        if (!file) return
+        setFileName(file.name)
+        try {
+          const reader = new FileReader()
+          reader.onload = () => {
+            const content = typeof reader.result === 'string' ? reader.result : ''
+            setText(content)
+            setParsed(null)
+            say(`已读入「${file.name}」（${content.length} 字符），点「解析预览」看结果`, 'info')
+          }
+          reader.onerror = () => say('文件读取失败', 'err')
+          reader.readAsText(file, 'utf-8')
+        } catch {
+          say('这个浏览器不支持读取本地文件', 'err')
+        }
+      }
+
+      const sum = parsed ? summarizeImport(parsed) : null
+
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: GAP.md } }, [
+        h(Card, {
+          key: 'input',
+          title: '导入生词',
+          hint: '两步：先在下面粘贴或读入内容，点「解析预览」看清会加什么，再点「确认导入」才真正写进生词本。',
+        }, [
+          h(Input, {
+            key: 'ta',
+            multiline: true,
+            value: text,
+            placeholder: '三种都认：\n一行一词\napple,ˈæpl,n. 苹果\nhello  /həˈloʊ/  int. 喂\n也可以直接粘本插件导出的 JSON 备份。',
+            onChange: (value) => { setText(value); setParsed(null) },
+          }),
+          h('div', { key: 'file', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap', alignItems: 'center' } }, [
+            h('label', {
+              key: 'fl',
+              style: {
+                display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+                padding: '5px 12px', borderRadius: 8, minHeight: 30,
+                border: `1px solid ${C.border2}`, background: C.bg1,
+                fontSize: FS.body, fontWeight: 580, color: C.text,
+              },
+            }, [
+              '从文件读取',
+              h('input', {
+                key: 'in',
+                type: 'file',
+                accept: '.txt,.csv,.tsv,.json',
+                style: { display: 'none' },
+                onChange: onFile,
+              }),
+            ]),
+            fileName !== ''
+              ? h('span', { key: 'fn', style: { fontSize: FS.small, color: C.textDim } }, fileName)
+              : h('span', { key: 'fn0', style: { fontSize: FS.small, color: C.textFaint } }, '支持 .txt / .csv / .tsv / .json'),
+          ]),
+
+          h('div', { key: 'book', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap', alignItems: 'center' } }, [
+            h(Select, {
+              key: 'sel',
+              value: bookId,
+              onChange: setBookId,
+              options: books.map((item) => ({ value: item.id, label: item.name })),
+            }),
+            h('div', { key: 'nb', style: { flex: '1 1 160px', minWidth: 140 } }, h(Input, {
+              value: newBookName,
+              placeholder: '或新建一本词书（填名字）',
+              onChange: setNewBookName,
             })),
           ]),
 
-    /* 词库 */
-        section('packs', '词库与句子库',
-          '系统自带三个，随插件分发，完全离线。其余词库可以自己加。',
-          [
-            h('div', { key: 'cards', style: { display: 'flex', flexDirection: 'column', gap: GAP.sm } },
-              WORD_PACKS.map((pack) => h('div', {
-                key: pack.id,
-                style: {
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: GAP.md,
-                  padding: '13px 15px',
-                  borderRadius: 13,
-                  border: `1px solid ${C.border2}`,
-                  background: C.bg1,
-                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.07)',
-                },
-              }, [
-                h('div', { key: 'm', style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 } }, [
-                  h('div', { key: 'n', style: { display: 'flex', alignItems: 'center', gap: 8 } }, [
-                    h('span', { key: 't', style: { fontSize: FS.body, fontWeight: 650, color: C.text } }, pack.name),
-                    h(Badge, { key: 'b', text: '系统自带', tone: 'neutral' }),
-                  ]),
-                  h('div', { key: 'd', style: { fontSize: FS.small, lineHeight: 1.85, color: C.textFaint } }, pack.desc),
+          h('div', { key: 'btns', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
+            h(Button, {
+              key: 'parse', label: '解析预览', variant: 'primary',
+              disabled: text.trim() === '', busy: busy === 'parse',
+              onClick: onParse,
+            }),
+            parsed && parsed.words.length > 0
+              ? h(Button, {
+                key: 'confirm',
+                label: `确认导入 ${parsed.words.filter((row) => row.status !== 'dup').length} 个`,
+                busy: busy === 'import',
+                onClick: onConfirm,
+              })
+              : null,
+            parsed !== null
+              ? h(Button, { key: 'cancel', label: '清空预览', variant: 'ghost', onClick: () => { setParsed(null); setShowSkipped(false) } })
+              : null,
+          ]),
+        ]),
+
+        parsed !== null
+          ? h(Card, {
+            key: 'preview',
+            title: '预览',
+            hint: sum
+              ? `识别 ${sum.total} 个词：新增 ${sum.fresh}、已存在 ${sum.dup}、词库未收录 ${sum.nodict}${sum.skipped > 0 ? `；跳过 ${sum.skipped} 行` : ''}。确认之前不会写库。`
+              : null,
+          }, [
+            parsed.words.length === 0
+              ? h(Note, { key: 'none', tone: 'warn', text: '这段内容里没有可用词条。看看下面的跳过原因。' })
+              : h('div', { key: 'list', className: 'hds-preview' }, [
+                h('div', { key: 'head', style: { display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', fontSize: FS.small, color: C.textDim } }, [
+                  h(Badge, { key: 'f', text: `格式 ${IMPORT_FORMATS.includes(parsed.format) ? parsed.format : 'plain'}`, tone: 'neutral' }),
+                  h(Badge, { key: 'n', text: `新增 ${sum.fresh}`, tone: 'success' }),
+                  h(Badge, { key: 'd', text: `已存在 ${sum.dup}`, tone: 'neutral' }),
+                  h(Badge, { key: 'k', text: `未收录 ${sum.nodict}`, tone: 'warn' }),
                 ]),
-              ])),
-            ),
-            h('div', { key: 'custom', style: { display: 'flex', flexDirection: 'column', gap: GAP.sm } }, [
-              h('h4', { key: 't', style: { margin: 0, fontSize: FS.body, fontWeight: 650, color: C.text } }, '自己加词库'),
-              h('p', { key: 'h', style: { margin: 0, fontSize: FS.small, lineHeight: 1.9, color: C.textDim } },
-                '把词库文件放进下面这个目录，重启 DSH 后自动加载。支持 ECDICT 的 CSV（只要有 word 与 translation 两列），或者与 dict.dat 同构的 JSON。'),
-              h('div', { key: 'row', style: { display: 'flex', alignItems: 'center', gap: GAP.sm, flexWrap: 'wrap' } }, [
-                h('code', {
-                  key: 'p',
-                  style: {
-                    flex: 1, minWidth: 200,
-                    fontFamily: 'var(--ds-font-family-code, ui-monospace, monospace)',
-                    fontSize: FS.small, lineHeight: 1.9,
-                    padding: '8px 12px', borderRadius: 8,
-                    border: `1px dashed ${C.border2}`,
-                    background: C.bgBase, color: C.textFaint,
-                    userSelect: 'all',
-                    overflowWrap: 'anywhere',
-                  },
-                }, packsDir),
+                h('div', { key: 'table', className: 'hds-preview-table' }, [
+                  h('div', { key: 'th', className: 'hds-preview-row', style: { fontSize: FS.small, color: C.textDim, background: C.bg1 } }, [
+                    h('span', { key: 'a' }, '行'),
+                    h('span', { key: 'b' }, '词头'),
+                    h('span', { key: 'c' }, '状态'),
+                    h('span', { key: 'd' }, '释义'),
+                  ]),
+                  ...parsed.words.slice(0, PREVIEW_ROW_LIMIT).map((row) => h('div', { key: `r-${row.line}-${row.head}`, className: 'hds-preview-row' }, [
+                    h('span', { key: 'a', className: 'hds-preview-line' }, String(row.line)),
+                    h('span', { key: 'b', style: { fontWeight: 620 } }, row.head),
+                    h('span', { key: 'c' }, h(Badge, {
+                      text: row.status === 'dup' ? '已存在' : row.status === 'nodict' ? '词库未收录' : '将新增',
+                      tone: row.status === 'dup' ? 'neutral' : row.status === 'nodict' ? 'warn' : 'success',
+                    })),
+                    h('span', { key: 'd', className: 'hds-preview-gloss' }, glossText(row) || '—'),
+                  ])),
+                ]),
+                parsed.words.length > PREVIEW_ROW_LIMIT
+                  ? h('p', {
+                    key: 'more',
+                    style: { margin: 0, fontSize: FS.small, lineHeight: 1.9, color: C.textFaint },
+                  }, `预览只显示前 ${PREVIEW_ROW_LIMIT} 行，还有 ${parsed.words.length - PREVIEW_ROW_LIMIT} 行没显示；点「确认导入」时会把这些也一起导进去。`)
+                  : null,
+              ]),
+
+            parsed.skipped.length > 0
+              ? h('div', { key: 'skip', style: { display: 'flex', flexDirection: 'column', gap: 6 } }, [
                 h(Button, {
-                  key: 'copy', label: '复制路径', size: 'sm',
-                  onClick: (event) => {
-                    const btn = event?.currentTarget
-                    const done = () => {
-                      if (btn) btn.textContent = '已复制'
-                      setTimeout(() => { if (btn) btn.textContent = '复制路径' }, 1400)
-                    }
-                    try { navigator.clipboard?.writeText(packsDir).then(done, () => {}) } catch { /* ignore */ }
+                  key: 'toggle',
+                  label: showSkipped ? `收起跳过的 ${parsed.skipped.length} 行` : `跳过 ${parsed.skipped.length} 行（展开看原因）`,
+                  size: 'sm',
+                  variant: 'ghost',
+                  onClick: () => setShowSkipped((prev) => !prev),
+                }),
+                showSkipped
+                  ? h('div', { key: 'skips', className: 'hds-preview-skip' }, parsed.skipped.map((row, index) => h('div', {
+                    key: `s-${row.line}-${index}`, className: 'hds-skip-row',
+                  }, [
+                    h('span', { key: 'l', className: 'hds-skip-line' }, `#${row.line}`),
+                    h('span', { key: 'r', style: { flex: '0 0 auto', fontWeight: 600 } }, row.reason),
+                    h('span', { key: 't', style: { flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, row.raw || '（空行）'),
+                  ])))
+                  : null,
+              ])
+              : null,
+          ])
+          : null,
+      ])
+    }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Tab 4：外观与交互（原有字段全保留）
+   ═══════════════════════════════════════════════════════════════════════ */
+
+    const WORD_PACKS = [
+      { id: 'core', name: '核心词库', builtin: true, desc: '20,499 个考纲核心词：中考 / 高考 / 四六级 / 考研 / 托福 / 雅思 / GRE，每个词带词性、中文释义、英文释义与变音标注。' },
+      { id: 'roots', name: '词根词缀库', builtin: true, desc: '6,374 个词的词根词缀拆解，来自 ECDICT 词根库（MIT）。' },
+      { id: 'examples', name: '双语例句库', builtin: true, desc: '8,960 个词的中英对照例句，来自 Tatoeba（CC BY 2.0 FR）。' },
+    ]
+
+    function appearanceTab(ctx) {
+      const { h, P, ux, patchAppearance, packsDir, storage } = ctx
+      const { Card, Button, Input, Select, Switch, Note, Field, GAP, FS, C } = P
+      const section = (key, title, hint, children) => h(Card, { key, title, hint }, children)
+      const field = (key, label, control, hint) => h(Field, { key, label, hint }, control)
+
+      const [translator, setTranslator] = useState(() => readTranslator(storage))
+      const [packs, setPacks] = useState(() => readPacks(storage))
+      const [maxHanRatio, setMaxHanRatio] = useState(() => readMaxHanRatioRaw(storage))
+      const [dictInfo, setDictInfo] = useState(null)
+
+      useEffect(() => {
+        let alive = true
+        try {
+          fetch('/api/dsh-hover-dict/meta.json')
+            .then((res) => (res.ok ? res.json() : null))
+            .then((data) => { if (alive && data) setDictInfo(data) })
+            .catch(() => { /* 拿不到就不显示 */ })
+        } catch { /* ignore */ }
+        return () => { alive = false }
+      }, [])
+
+  /* ── 生词着色设置组（设计 §C4） ──
+     读写都走 patchAppearance → saveUx → localStorage；
+     app.js 里包了 localStorage.setItem，写完立刻触发 marker 重算，所以这即时生效。 */
+  /**
+   * 当前标记色的原始存档值。
+   *
+   * 可能是哨兵 'theme-error'（默认，跟随主题错误红），也可能是七位 hex。
+   * 判等必须拿这个原值比 —— 不能拿 markColorToCss 的结果比，
+   * 否则「跟随主题」与「恰好也是 #e5484d」会混成同一个高亮态。
+   */
+      const markColorRaw = ux.appearance.markColor ?? DEFAULT_MARK_COLOR
+  /** 解析成可用于 CSS 的颜色（哨兵→var(...)），给预览用。 */
+      const markColor = markColorToCss(markColorRaw)
+  /**
+   * 当前是否「跟随主题错误红」。
+   *
+   * 必须拿**原始存档值**跟哨兵比，不能拿解析结果比 ——
+   * markColor 已经是 `var(--dsw-alias-state-error-primary, #e5484d)`，
+   * 拿它跟 'theme-error' 比永远为 false，高亮态就永远不会亮（踩过一次）。
+   */
+      const isThemeColor = markColorRaw === DEFAULT_MARK_COLOR
+
+      const markPreview = (() => {
+        const off = ux.appearance.markWords === false
+    // 与 marker.js highlightCss 同一套解析：哨兵 → var(...)，hex → 原样
+        const color = markColor
+    // 已掌握的淡色也照抄 highlightCss：同色掺 50% 透明（不是另造一个 opacity）
+        const knownColor = `color-mix(in srgb, ${color} 50%, transparent)`
+        const markOne = (word, known) => {
+          if (off) return h('span', { key: word }, word)
+      // 只改字的颜色 —— 没有底色、没有下划线（用户裁定「只要改字的颜色」）
+          return h('span', { key: word, style: { color: known ? knownColor : color } }, word)
+        }
+    // 预览句里几个词模拟「已收藏未掌握」，一个模拟「已掌握」（markKnown 开时淡色）
+        return h('div', {
+          key: 'preview',
+          className: 'hds-mark-preview',
+          'data-off': off ? 'true' : undefined,
+          'aria-label': '生词着色预览',
+        }, off
+          ? 'The quick brown fox jumps over the lazy dog. —— 着色已关闭，正文不会变色'
+          : [
+            'The ',
+            markOne('quick'),
+            ' ',
+            markOne('brown'),
+            ' fox jumps over the ',
+            markOne('lazy', ux.appearance.markKnown === true),
+            ' dog.',
+          ])
+      })()
+
+      const markSection = () => section('mark', '生词着色',
+        '把生词本里还没掌握的词在助手回复和思考内容里标出来，一眼看见自己不会的词。只改这些字的颜色，不加底色、不加下划线，正文内容一个字都不动。',
+        [
+          field('m1', '着色开关',
+            h(Switch, {
+              checked: ux.appearance.markWords !== false,
+              onChange: (next) => patchAppearance('markWords', next),
+              label: ux.appearance.markWords !== false ? '开启' : '关闭（正文完全不变色）',
+            }),
+            '关掉之后正文一个字都不会变，浮层与生词本照常工作。'),
+
+          field('m2', '标记颜色',
+            h('div', { style: { display: 'flex', flexDirection: 'column', gap: GAP.sm } }, [
+              h('div', { key: 'sw', className: 'hds-swatches' }, [
+            // 首选项：跟随主题错误红（哨兵 'theme-error'，不是 hex）。
+            // 与该词在正文里的实际取色同一个 token —— 换主题/暗色都跟着变。
+                h('button', {
+                  key: 'theme-error',
+                  type: 'button',
+                  className: 'hds-swatch',
+                  'aria-label': '标记颜色：跟随主题错误红',
+                  'aria-pressed': isThemeColor ? 'true' : 'false',
+                  title: '跟随主题错误红',
+                  style: {
+                // 画成一道斜杠 + 红边，表示「这个色由主题决定」而不是某个固定色
+                    background: `linear-gradient(135deg, color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 22%, transparent), color-mix(in srgb, var(--dsw-alias-state-error-primary, #e5484d) 70%, transparent))`,
+                    borderColor: 'var(--dsw-alias-state-error-primary, #e5484d)',
                   },
+                  onClick: () => patchAppearance('markColor', DEFAULT_MARK_COLOR),
+                }),
+                ...MARK_COLOR_PRESETS.map((preset) => h('button', {
+                  key: preset,
+                  type: 'button',
+                  className: 'hds-swatch',
+                  'aria-label': `用颜色 ${preset}`,
+                  'aria-pressed': !isThemeColor && markColorRaw === preset ? 'true' : 'false',
+                  style: { background: preset },
+                  onClick: () => patchAppearance('markColor', preset),
+                })),
+                h('input', {
+                  key: 'pick',
+                  type: 'color',
+              // <input type=color> 只认七位 hex；哨兵态下回落默认红，只是取色器的初始值，
+              // 用户一动手就切到固定 hex（不改变「当前是跟随主题」这个事实被 aria-pressed 记录）
+                  value: /^#[0-9a-f]{6}$/i.test(markColorRaw) ? markColorRaw : '#e5484d',
+                  'aria-label': '自定义标记颜色',
+                  title: '自定义颜色',
+                  style: {
+                    width: 34, height: 26, padding: 0, border: `1px solid ${C.border2}`,
+                    borderRadius: 8, background: C.bgBase, cursor: 'pointer',
+                  },
+                  onChange: (event) => patchAppearance('markColor', event.target.value),
                 }),
               ]),
+              h('span', {
+                key: 'now',
+                style: { fontSize: FS.small, lineHeight: 1.8, color: C.textDim },
+              }, isThemeColor
+                ? '当前：跟随主题错误红（与工具报错的红色一致，随主题变化）'
+                : `当前：固定颜色 ${markColorRaw}`),
             ]),
-            h(Note, {
-              key: 'note',
-              tone: 'info',
-              text: `当前 ${(dictInfo?.entries ?? 20499).toLocaleString()} 个词条 · `
-                + `${(dictInfo?.examples ?? 8960).toLocaleString()} 个带双语例句 · `
-                + `${(dictInfo?.roots ?? 6374).toLocaleString()} 个带词根分析`,
+            '默认跟随主题错误红。只在词上改字体颜色，不加底色、不加下划线。'),
+
+          field('m4', '已掌握的词也淡色显示',
+            h(Switch, {
+              checked: ux.appearance.markKnown === true,
+              onChange: (next) => patchAppearance('markKnown', next),
+              label: ux.appearance.markKnown === true ? '淡色显示' : '不着色',
             }),
-          ]),
+            '默认不着色 —— 已经掌握的词不该继续刺眼。'),
 
-    /* 生词本 */
-        section('book', '生词本',
-          `已收藏 ${bookSize} 个词。支持从有道、欧路、百词斩导出的内容直接粘贴，一行一个。`,
-          [
-            bookSize > 0
-              ? h('div', { key: 'chips', className: 'hds-chips' },
-                bookWords.slice(0, CHIP_LIMIT).map((item) => h('span', { key: item.head, className: 'hds-chip' }, [
-                  h('span', { key: 'w' }, item.head),
-                  h('button', {
-                    key: 'x', className: 'hds-chip-x', type: 'button', title: '移出',
-                    onClick: () => book.remove(item.head),
-                  }, '×'),
-                ])),
-              )
-              : h('p', { key: 'empty', style: { margin: 0, fontSize: FS.small, lineHeight: 1.85, color: C.textFaint } },
-                '还没有生词。在对话里点开一个词，点标题旁边的 ☆ 就能收进来。'),
+          field('m5', '预览', markPreview, '改上面任何一项，这句会立刻跟着变；真实对话里的着色也是即时生效的。'),
+        ])
 
-            bookSize > CHIP_LIMIT
-              ? h('p', { key: 'more', style: { margin: 0, fontSize: FS.small, color: C.textFaint } },
-                `只显示了前 ${CHIP_LIMIT} 个，还有 ${bookSize - CHIP_LIMIT} 个。用搜索或导出来看全部。`)
-              : null,
-
-            h(Input, {
-              key: 'ta',
-              multiline: true,
-              value: importText,
-              placeholder: '粘贴单词表，一行一个。有道的导出内容可以直接贴（每行第一个词会被识别）。',
-              onChange: setImportText,
-            }),
-
-            h('div', { key: 'btns', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
-              h(Button, {
-                key: 'import', label: '导入', variant: 'primary',
-                disabled: importText.trim() === '', busy: busy === 'import',
-                onClick: onImport,
-              }),
-              h(Button, {
-                key: 'export', label: '导出为 txt',
-                disabled: bookSize === 0, onClick: onExport,
-              }),
-              h(Button, {
-                key: 'clear',
-                label: clearPending ? '确认清空' : '清空',
-                variant: clearPending ? 'primary' : 'danger',
-                disabled: busy === 'clear' || bookSize === 0,
-                onClick: onClear,
-              }),
-              clearPending
-                ? h(Button, {
-                  key: 'cancel', label: '取消', variant: 'ghost',
-                  onClick: () => { setClearPending(false); setMessage(null) },
-                })
-                : null,
-            ]),
-          ]),
-
-    /* 显示 */
+      return h('div', { style: { display: 'flex', flexDirection: 'column', gap: GAP.md } }, [
         section('ui', '显示', null, [
           field('s1', '浮层释义条数',
             h(Input, {
@@ -4458,7 +8392,6 @@ window.__ModuleLoader__.load({
               style: { maxWidth: 110 },
             }),
             '按百分比算：汉字数 ÷（汉字 + 英文字母）。超过这个比例就完全不弹窗，既不翻译也不提示。设 0 表示只要有一个汉字就不翻。'),
-
           field('s4', '显示考纲标签',
             h(Switch, {
               checked: ux.appearance.showTags !== false,
@@ -4467,21 +8400,541 @@ window.__ModuleLoader__.load({
             })),
         ]),
 
-        message !== null
-          ? h(Note, {
-            key: 'msg',
-            tone: message.tone === 'err' ? 'err' : message.tone === 'info' ? 'info' : 'ok',
-            text: message.text,
+        markSection(),
+
+        section('tr', '翻译接口',
+          '划选纯英文句子时用哪个服务。三项都不需要额外密钥。',
+          [
+            field('f1', '翻译服务', h(Select, {
+              value: translator,
+              options: [
+                { value: 'auto', label: '自动（先用 Google，失败换 Bing）' },
+                { value: 'google', label: 'Google 翻译' },
+                { value: 'bing', label: 'Bing 翻译' },
+                { value: 'off', label: '关闭句子翻译' },
+              ],
+              onChange: (value) => { setTranslator(value); writeTranslator(storage, value) },
+            })),
+          ]),
+
+        section('packs', '词库与句子库',
+          '系统自带三个，随插件分发，完全离线。其余词库可以自己加。',
+          [
+            h('div', { key: 'cards', style: { display: 'flex', flexDirection: 'column', gap: GAP.sm } },
+              WORD_PACKS.map((pack) => h('div', {
+                key: pack.id,
+                style: {
+                  display: 'flex', alignItems: 'center', gap: GAP.md,
+                  padding: '13px 15px', borderRadius: 13,
+                  border: `1px solid ${C.border2}`, background: C.bg1,
+                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.07)',
+                },
+              }, [
+                h('div', { key: 'm', style: { flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5 } }, [
+                  h('div', { key: 'n', style: { display: 'flex', alignItems: 'center', gap: 8 } }, [
+                    h('span', { key: 't', style: { fontSize: FS.body, fontWeight: 650, color: C.text } }, pack.name),
+                    h(P.Badge, { key: 'b', text: '系统自带', tone: 'neutral' }),
+                  ]),
+                  h('div', { key: 'd', style: { fontSize: FS.small, lineHeight: 1.85, color: C.textFaint } }, pack.desc),
+                ]),
+              ])),
+            ),
+            h('div', { key: 'custom', style: { display: 'flex', flexDirection: 'column', gap: GAP.sm } }, [
+              h('h4', { key: 't', style: { margin: 0, fontSize: FS.body, fontWeight: 650, color: C.text } }, '自己加词库'),
+              h('p', { key: 'h', style: { margin: 0, fontSize: FS.small, lineHeight: 1.9, color: C.textDim } },
+                '把词库文件放进下面这个目录，重启 DSH 后自动加载。支持 ECDICT 的 CSV（只要有 word 与 translation 两列），或者与 dict.dat 同构的 JSON。'),
+              h('div', { key: 'row', style: { display: 'flex', alignItems: 'center', gap: GAP.sm, flexWrap: 'wrap' } }, [
+                h('code', {
+                  key: 'p',
+                  style: {
+                    flex: 1, minWidth: 200,
+                    fontFamily: 'var(--ds-font-family-code, ui-monospace, monospace)',
+                    fontSize: FS.small, lineHeight: 1.9,
+                    padding: '8px 12px', borderRadius: 8,
+                    border: `1px dashed ${C.border2}`,
+                    background: C.bgBase, color: C.textFaint,
+                    userSelect: 'all', overflowWrap: 'anywhere',
+                  },
+                }, packsDir),
+                h(Button, {
+                  key: 'copy', label: '复制路径', size: 'sm',
+                  onClick: (event) => {
+                    const btn = event?.currentTarget
+                    const done = () => {
+                      if (btn) btn.textContent = '已复制'
+                      setTimeout(() => { if (btn) btn.textContent = '复制路径' }, 1400)
+                    }
+                    try { navigator.clipboard?.writeText(packsDir).then(done, () => {}) } catch { /* ignore */ }
+                  },
+                }),
+              ]),
+            ]),
+            h(Note, {
+              key: 'note',
+              tone: 'info',
+              text: `当前 ${(dictInfo?.entries ?? 20499).toLocaleString()} 个词条 · `
+                + `${(dictInfo?.examples ?? 8960).toLocaleString()} 个带双语例句 · `
+                + `${(dictInfo?.roots ?? 6374).toLocaleString()} 个带词根分析`,
+            }),
+          ]),
+      ])
+    }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   Tab 5：有道同步（设计 §D3）
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/** 有道路由前缀。与宿主 index.js 的 API_PREFIX 同源（net.js 也导出了一份）。 */
+    const YOUDAO_BASE = `${API_PREFIX}/youdao`
+
+/** 四步傻瓜引导（用户是 IT 小白，每步一句话说清点哪里）。 */
+    const YOUDAO_STEPS = [
+      { title: '登录有道词典', detail: '浏览器打开 dict.youdao.com，用你的账号登录。没登录的话下一步会拿到空的 Cookie。' },
+      { title: '打开开发者工具', detail: '按 F12（Mac 是 ⌥⌘I），切到「网络 / Network」标签，然后刷新一次页面。' },
+      { title: '复制 Cookie', detail: '在请求列表里点第一个请求，右侧找到「请求头 / Request Headers」，把 Cookie 那一整行的值全部复制。' },
+      { title: '粘贴并保存', detail: '回到这里粘进下面的输入框，点「保存并验证」。看到昵称就是成功了。' },
+    ]
+
+/** 降级引导（宿主报接口改版时显示，设计 §D2 第 3 点）。 */
+    const YOUDAO_FALLBACK_STEPS = [
+      '在有道生词本页面，把词表整段全选复制（Ctrl/⌘ + A，再 Ctrl/⌘ + C）。',
+      '切到本插件的「导入」页签，粘贴进去。',
+      '点「解析预览」确认词表认得对，再点「确认导入」。',
+    ]
+
+/**
+ * 有道路由统一请求。
+ *
+ * 与 net.js 的 fetchAsset 分工：那个只管词库文件（GET + ETag 缓存），
+ * 这里要 POST/DELETE 并能把宿主的 `{ok:false,error:{code,message,fallback}}`
+ * 原样带出来给面板判断（要不要显示降级区靠 error.fallback）。
+ *
+ * 永不抛：网络错也折成 { ok:false, error:{code:'E_NETWORK'} }，
+ * 因为设置面板的渲染路径不该因为宿主没起而炸掉。
+ */
+    async function youdaoRequest(method, tail, body, timeoutMs = 30000) {
+      const controller = typeof AbortController === 'function' ? new AbortController() : null
+      const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
+      try {
+        const response = await fetch(`${YOUDAO_BASE}${tail}`, {
+          method,
+          credentials: 'same-origin',
+          ...(body === undefined
+            ? {}
+            : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+          ...(controller ? { signal: controller.signal } : {}),
+        })
+        let payload = null
+        try { payload = await response.json() } catch { payload = null }
+        if (payload !== null && typeof payload === 'object') return payload
+        return { ok: false, error: { code: 'E_BAD_JSON', message: '宿主返回的内容看不懂，请重启 DSH 后再试' } }
+      } catch (error) {
+        if (error?.name === 'AbortError') {
+          return { ok: false, error: { code: 'E_YOUDAO_TIMEOUT', message: '超时了，收藏夹可能很大，稍后再试一次' } }
+        }
+        return { ok: false, error: { code: 'E_NETWORK', message: `连不上宿主，请确认插件已启用：${error?.message ?? error}` } }
+      } finally {
+        if (timer) clearTimeout(timer)
+      }
+    }
+
+/**
+ * E_ → 面板话术。
+ *
+ * 宿主已经给了中文 message，这里只在少数需要「下一步做什么」的错误上
+ * 补一句可操作的话；其余直接用宿主文案，不自己编。
+ */
+    function youdaoErrorText(error) {
+      const code = String(error?.code ?? '')
+      const message = typeof error?.message === 'string' && error.message !== '' ? error.message : '操作失败'
+      if (code === 'E_YOUDAO_AUTH') return `${message}（依次按 F12 → 网络 → 刷新，重新复制 Cookie）`
+      return message
+    }
+
+/**
+ * 上次同步时间 → 「刚刚 / 3 分钟前 / 今天 14:20 / 11 月 20 日」。
+ *
+ * @param {number} at 时间戳
+ * @param {number} [now] 便于测试注入
+ * @returns {string}
+ */
+    function syncedAtLabel(at, now = Date.now()) {
+      if (!Number.isFinite(at) || at <= 0) return '还没同步过'
+      const diff = now - at
+      if (diff < 60_000) return '刚刚同步过'
+      if (diff < 3600_000) return `${Math.floor(diff / 60_000)} 分钟前同步`
+      const date = new Date(at)
+      const hh = String(date.getHours()).padStart(2, '0')
+      const mm = String(date.getMinutes()).padStart(2, '0')
+      if (diff < 24 * 3600_000) return `今天 ${hh}:${mm} 同步`
+      return `${date.getMonth() + 1} 月 ${date.getDate()} 日同步`
+    }
+
+/**
+ * 状态卡三态（设计 §D3）。纯函数，单独可测。
+ *
+ *   empty  未配置：hasCookie=false                  → 四步引导
+ *   ready  已配置且有效：hasCookie && valid          → 昵称 + 同步统计
+ *   stale  已配置但失效：hasCookie && !valid         → 红条「重新复制」
+ *   checking 还在查
+ *
+ * 注意 hasCookie 与 valid 是**两个独立维度**：宿主在 Cookie 失效时
+ * 仍报 hasCookie=true（不清盘），这正是「失效红条」能显示出来的前提。
+ *
+ * @param {{ hasCookie?: boolean, valid?: boolean } | null} status
+ * @param {boolean} [checking]
+ * @returns {'checking'|'empty'|'ready'|'stale'}
+ */
+    function youdaoMode(status, checking) {
+      if (checking) return 'checking'
+      if (!status || status.hasCookie !== true) return 'empty'
+      return status.valid === true ? 'ready' : 'stale'
+    }
+
+/**
+ * 一键抓取完成后的结果条文案（设计 §D3）。
+ *
+ * **重要**：宿主返回的 added/dup 恒为 0（它不知道浏览器生词本里已有什么），
+ * 真实数字必须前端算：抓取前记一次 size，importMany 之后再看一次。
+ * 所以这里收的是「算好的」数字，不是宿主字段。纯函数，便于验证不算错。
+ *
+ * @param {{ before: number, after: number, fetched: number }} input
+ * @returns {{ added: number, dup: number, total: number, text: string }}
+ */
+    function youdaoSyncResult(input) {
+      const before = Number.isFinite(input?.before) ? Math.max(0, input.before) : 0
+      const after = Number.isFinite(input?.after) ? Math.max(0, input.after) : before
+      const fetched = Number.isFinite(input?.fetched) ? Math.max(0, input.fetched) : 0
+  // 新增 = 生词本总量的真实增量；已存在 = 抓到的里面没能新建的
+      const added = Math.max(0, after - before)
+      const dup = Math.max(0, fetched - added)
+      return {
+        added,
+        dup,
+        total: fetched,
+        text: fetched === 0
+          ? '收藏夹里没有词（或者这本收藏夹是空的）'
+          : `抓取完成：新增 ${added} 词，已存在 ${dup} 词（共 ${fetched} 个）。`,
+      }
+    }
+
+/**
+ * 有道同步页签。
+ *
+ * 三种状态（设计 §D3）：
+ *   未配置  hasCookie=false            → 四步引导 + 输入框
+ *   已配置  hasCookie=true  valid=true → 昵称 + 上次同步 + 抓取按钮
+ *   已失效  hasCookie=true  valid=false→ 红条「重新复制」+ 输入框
+ *
+ * 抓取是一次性 POST /youdao/sync，没有真实进度，所以用不定长流光条 +
+ * 「正在抓取…」文案，完成后直接出数字（不做 SSE）。
+ */
+    function YoudaoTab(props) {
+      const { h, P, book, say: outerSay, onGoBook } = props
+      const { Card, Button, Input, Select, Switch, Badge, Note, Field, GAP, FS, C } = P
+
+      const [status, setStatus] = useState(null)   // 宿主 status 响应
+      const [checking, setChecking] = useState(true)
+      const [cookieText, setCookieText] = useState('')
+      const [saving, setSaving] = useState(false)
+      const [syncing, setSyncing] = useState(false)
+      const [result, setResult] = useState(null)   // { added, dup, total }
+      const [failure, setFailure] = useState(null) // { code, message, fallback }
+      const [books, setBooks] = useState(() => {
+        try { return typeof book?.listBooks === 'function' ? book.listBooks() : [] } catch { return [] }
+      })
+      const [targetBook, setTargetBook] = useState('default')
+      const [manualOpen, setManualOpen] = useState(false)
+
+      const refreshStatus = () => {
+        setChecking(true)
+        youdaoRequest('GET', '/status').then((payload) => {
+          setChecking(false)
+          if (payload?.ok === true) {
+            setStatus(payload)
+        // 失效时把红条留在界面上，但不清它 —— hasCookie 仍为 true（宿主口径）
+            if (payload.valid !== true && payload.hasCookie === true) {
+              setFailure({ code: 'E_YOUDAO_AUTH', message: 'Cookie 已失效，请重新复制' })
+            } else {
+              setFailure(null)
+            }
+          } else {
+            setStatus({ hasCookie: false, valid: false, lastSyncAt: 0, lastCount: 0 })
+            setFailure(null)
+          }
+        }).catch(() => { setChecking(false) })
+      }
+
+      useEffect(() => { refreshStatus() }, [])
+      useEffect(() => {
+        try { if (typeof book?.listBooks === 'function') setBooks(book.listBooks()) } catch { /* ignore */ }
+      }, [book])
+
+      const hasCookie = status?.hasCookie === true
+      const mode = youdaoMode(status, checking)
+
+      const onSave = () => {
+        const value = cookieText.trim()
+        if (value === '') { setFailure({ code: 'E_EMPTY_COOKIE', message: '先把复制的 Cookie 粘进来' }); return }
+        setSaving(true)
+        setFailure(null)
+        youdaoRequest('POST', '/cookie', { cookie: value }).then((payload) => {
+          setSaving(false)
+          if (payload?.ok === true && payload.valid === true) {
+        // 成功后立刻清空输入框 —— 明文不该在界面上多留一秒
+            setCookieText('')
+            setResult(null)
+            refreshStatus()
+            outerSay?.('Cookie 已保存并通过验证', 'ok')
+          } else if (payload?.ok === true) {
+            setFailure({ code: 'E_YOUDAO_AUTH', message: payload.message ?? 'Cookie 无效或已过期' })
+          } else {
+            setFailure({ code: payload?.error?.code ?? 'E_YOUDAO_FAILED', message: youdaoErrorText(payload?.error) })
+          }
+        }).catch(() => setSaving(false))
+      }
+
+      const onClear = () => {
+        setSaving(true)
+        youdaoRequest('DELETE', '/cookie').then(() => {
+          setSaving(false)
+          setCookieText('')
+          setResult(null)
+          setFailure(null)
+          refreshStatus()
+        }).catch(() => setSaving(false))
+      }
+
+      const onSync = () => {
+        setSyncing(true)
+        setFailure(null)
+        setResult(null)
+        youdaoRequest('POST', '/sync', { bookId: targetBook }, 180000).then((payload) => {
+          if (payload?.ok !== true) {
+            setSyncing(false)
+            const error = payload?.error ?? { code: 'E_YOUDAO_FAILED', message: '抓取失败' }
+            setFailure({ code: error.code, message: youdaoErrorText(error), fallback: error.fallback })
+            if (error.code === 'E_YOUDAO_AUTH' || error.code === 'E_YOUDAO_ENDPOINT') refreshStatus()
+            return
+          }
+          const heads = Array.isArray(payload.words) ? payload.words : []
+          const glosses = payload.glosses && typeof payload.glosses === 'object' ? payload.glosses : null
+      // 宿主不知道浏览器库里已有什么，added/dup 恒为 0 —— 真实新增数必须这算。
+          const before = (() => { try { return book?.size?.() ?? 0 } catch { return 0 } })()
+          const runImport = async () => {
+            try {
+              if (typeof book?.importMany !== 'function') return 0
+              await book.importMany(heads, 'youdao', { bookId: targetBook, ...(glosses ? { glosses } : {}) })
+              return heads.length
+            } catch { return 0 }
+          }
+          runImport().then(() => {
+            const after = (() => { try { return book?.size?.() ?? 0 } catch { return 0 } })()
+            const summary = youdaoSyncResult({ before, after, fetched: heads.length })
+            setSyncing(false)
+            setResult({ ...summary, endpoint: payload.endpoint, pages: payload.pages })
+            if (heads.length === 0) {
+              setFailure({ code: 'E_YOUDAO_EMPTY', message: summary.text })
+            }
+            refreshStatus()
           })
+        }).catch(() => setSyncing(false))
+      }
+
+  // ── 状态卡 ──
+      const statusCard = (() => {
+        if (mode === 'checking') {
+          return h('div', { key: 'st', className: 'hds-status-card' }, [
+            h('div', { key: 'm', className: 'hds-status-main' }, [
+              h('div', { key: 't', className: 'hds-status-title' }, '正在检查登录状态…'),
+            ]),
+          ])
+        }
+        if (mode === 'ready') {
+          return h('div', { key: 'st', className: 'hds-status-card', 'data-tone': 'ok' }, [
+            h('div', { key: 'm', className: 'hds-status-main' }, [
+              h('div', { key: 't', className: 'hds-status-title' },
+                status?.nickname ? `${status.nickname} · 已连接` : '已连接有道'),
+              h('div', { key: 'd', className: 'hds-status-meta' },
+                `${syncedAtLabel(status?.lastSyncAt)}${status?.lastCount > 0 ? ` · 上次抓到 ${status.lastCount} 个词` : ''}`),
+            ]),
+            h(Badge, { key: 'b', text: '有效', tone: 'success' }),
+          ])
+        }
+        if (mode === 'stale') {
+          return h('div', { key: 'st', className: 'hds-status-card', 'data-tone': 'warn' }, [
+            h('div', { key: 'm', className: 'hds-status-main' }, [
+              h('div', { key: 't', className: 'hds-status-title' }, 'Cookie 已失效'),
+              h('div', { key: 'd', className: 'hds-status-meta' },
+                '有道那边不认这段登录态了。重新走一遍下面四步，把新的 Cookie 粘进来。'),
+            ]),
+            h(Badge, { key: 'b', text: '失效', tone: 'danger' }),
+          ])
+        }
+        return h('div', { key: 'st', className: 'hds-status-card' }, [
+          h('div', { key: 'm', className: 'hds-status-main' }, [
+            h('div', { key: 't', className: 'hds-status-title' }, '还没连接有道'),
+            h('div', { key: 'd', className: 'hds-status-meta' },
+              '按下面四步复制一次 Cookie 就行，不用在这里输账号密码。'),
+          ]),
+          h(Badge, { key: 'b', text: '未配置', tone: 'neutral' }),
+        ])
+      })()
+
+  // ── 四步引导（未配置 / 失效时都显示，失效的人也需要照着重做） ──
+      const steps = (mode === 'empty' || mode === 'stale') ? h('ol', {
+        key: 'steps', className: 'hds-steps',
+      }, YOUDAO_STEPS.map((step, index) => h('li', { key: String(index), className: 'hds-step' }, [
+        h('span', { key: 'n', className: 'hds-step-no', 'aria-hidden': 'true' }, String(index + 1)),
+        h('div', { key: 'b', className: 'hds-step-body' }, [
+          h('b', { key: 't' }, step.title),
+          h('span', { key: 's' }, `　${step.detail}`),
+        ]),
+      ]))) : null
+
+      const cookieField = (mode === 'empty' || mode === 'stale') ? h(Field, {
+        key: 'cookie',
+        label: 'Cookie',
+        hint: '粘贴后输入框内容会被隐藏。保存成功后自动清空，不会留在这台机器以外的地方。',
+      }, [
+        h('div', { key: 'row', style: { display: 'flex', gap: GAP.sm, alignItems: 'center', flexWrap: 'wrap' } }, [
+          h(Input, {
+            key: 'i',
+            type: 'password',
+            value: cookieText,
+            placeholder: '把 Request Headers 里 Cookie 那一整行全部粘进来',
+            onChange: (next) => setCookieText(next),
+            style: { flex: 1, minWidth: 240 },
+          }),
+          h(Button, {
+            key: 'save',
+            label: '保存并验证',
+            variant: 'primary',
+            busy: saving,
+            onClick: onSave,
+          }),
+          hasCookie
+            ? h(Button, { key: 'clear', label: '清除', variant: 'danger', size: 'sm', onClick: onClear })
+            : null,
+        ]),
+      ]) : h('div', {
+        key: 'connected',
+        style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' },
+      }, [
+        h(Button, { key: 'clear2', label: '清除 Cookie', variant: 'danger', size: 'sm', onClick: onClear }),
+      ])
+
+  // ── 抓取区 ──
+      const syncBlock = (mode === 'ready') ? h('div', {
+        key: 'sync',
+        style: { display: 'flex', flexDirection: 'column', gap: GAP.sm },
+      }, [
+        h('div', { key: 'row', style: { display: 'flex', gap: GAP.sm, alignItems: 'flex-end', flexWrap: 'wrap' } }, [
+          h(Field, {
+            key: 'book',
+            label: '抓到哪里',
+            hint: '抓回来的词会进这个生词本，重复的词不会重复建档。',
+          }, h(Select, {
+            value: targetBook,
+            options: (books.length > 0 ? books : [{ id: 'default', name: '默认生词本' }])
+              .map((item) => ({ value: item.id, label: item.name })),
+            onChange: (value) => setTargetBook(value),
+          })),
+          h(Button, {
+            key: 'go',
+            label: syncing ? '正在抓取…' : '一键抓取收藏夹',
+            variant: 'primary',
+            busy: syncing,
+            onClick: onSync,
+          }),
+        ]),
+        syncing
+          ? h('div', { key: 'bar', className: 'hds-progress', role: 'progressbar', 'aria-label': '正在抓取有道收藏夹' })
+          : null,
+        syncing
+          ? h('div', { key: 'tip', style: { fontSize: FS.small, lineHeight: 1.85, color: C.textDim } },
+            '每页间隔至少 0.4 秒，词多的时候要等一会儿。请别关这个页面。')
+          : null,
+        result !== null
+          ? h(Note, {
+            key: 'done',
+            tone: 'ok',
+            text: result.text,
+            action: onGoBook
+              ? h(Button, { key: 'jump', label: '去生词本查看', size: 'sm', onClick: onGoBook })
+              : null,
+          })
+          : null,
+      ]) : null
+
+  // ── 降级引导（宿主报接口改版） ──
+      const showFallback = failure?.code === 'E_YOUDAO_ENDPOINT' || failure?.fallback === 'manual' || manualOpen
+      const fallbackBlock = showFallback ? h('div', {
+        key: 'fallback',
+        style: { display: 'flex', flexDirection: 'column', gap: GAP.sm },
+      }, [
+        h(Note, {
+          key: 'n',
+          tone: 'err',
+          text: '有道生词本接口改版了，自动抓取暂时用不了。可以按下面三步手动导进来，词一个都不会少。',
+        }),
+        h('ol', { key: 'steps', className: 'hds-steps' }, FALLBACK_STEP_NODES(h)),
+        onGoBook
+          ? h('div', { key: 'act', style: { display: 'flex', gap: GAP.sm } }, [
+            h(Button, {
+              key: 'go',
+              label: '打开导入页',
+              variant: 'primary',
+              size: 'sm',
+              onClick: onGoBook,
+            }),
+          ])
+          : null,
+      ]) : null
+
+      const failureBlock = (failure !== null && failure.code !== 'E_YOUDAO_ENDPOINT')
+        ? h(Note, { key: 'fail', tone: 'err', text: failure.message })
+        : null
+
+      return h(Card, {
+        key: 'youdao',
+        title: '有道同步',
+        hint: '把有道词典收藏夹里的词一次性抓进生词本。只需复制一次 Cookie，不在这里输账号密码。',
+      }, [
+        statusCard,
+        (mode === 'stale') ? h(Note, {
+          key: 'stale',
+          tone: 'err',
+          text: 'Cookie 失效了。照着下面四步重新复制一次，旧的会被覆盖。',
+        }) : null,
+        failureBlock,
+        steps,
+        cookieField,
+        syncBlock,
+        fallbackBlock,
+        !showFallback
+          ? h('div', { key: 'manual', style: { display: 'flex', alignItems: 'center', gap: GAP.sm } }, [
+            h('span', { key: 't', style: { fontSize: FS.small, color: C.textFaint } }, '自动抓取不顺利？'),
+            h(Button, {
+              key: 'b', label: '看手动导出方法', variant: 'ghost', size: 'sm',
+              onClick: () => setManualOpen(true),
+            }),
+          ])
           : null,
       ])
     }
 
-    const WORD_PACKS = [
-      { id: 'core', name: '核心词库', builtin: true, desc: '20,499 个考纲核心词：中考 / 高考 / 四六级 / 考研 / 托福 / 雅思 / GRE，每个词带词性、中文释义、英文释义与变音标注。' },
-      { id: 'roots', name: '词根词缀库', builtin: true, desc: '6,374 个词的词根词缀拆解，来自 ECDICT 词根库（MIT）。' },
-      { id: 'examples', name: '双语例句库', builtin: true, desc: '8,960 个词的中英对照例句，来自 Tatoeba（CC BY 2.0 FR）。' },
-    ]
+/** 降级引导的三步节点（抽出来是因为它嵌在 ol 里，别把组件体撑长）。 */
+    function FALLBACK_STEP_NODES(h) {
+      return YOUDAO_FALLBACK_STEPS.map((text, index) => h('li', { key: String(index), className: 'hds-step' }, [
+        h('span', { key: 'n', className: 'hds-step-no', 'aria-hidden': 'true' }, String(index + 1)),
+        h('div', { key: 'b', className: 'hds-step-body' }, text),
+      ]))
+    }
+
+/* ═══════════════════════════════════════════════════════════════════════
+   localStorage 读写（沿用 v1 的键名）
+   ═══════════════════════════════════════════════════════════════════════ */
 
 /** 读已启用的词库包。 */
     function readPacks(storage) {
@@ -4512,14 +8965,6 @@ window.__ModuleLoader__.load({
         }
       } catch { /* ignore */ }
       return 0.1
-    }
-
-/** 读 localStorage，失败返回 undefined。 */
-    function safeLocal() {
-      try {
-        if (typeof window !== 'undefined' && window.localStorage) return window.localStorage
-      } catch { /* ignore */ }
-      return undefined
     }
 
 /** 读翻译接口偏好。 */
@@ -4564,13 +9009,13 @@ window.__ModuleLoader__.load({
       }
       return () => { try { node.remove() } catch { /* ignore */ } }
     }
-
-      return { SettingsPanel, WORD_PACKS, readPacks, writePacks, readMaxHanRatioRaw, readTranslator, writeTranslator, translatorChain, ensureSettingsStyle }
+      return { SettingsPanel, bookTab, ReviewTab, ImportTab, appearanceTab, syncedAtLabel, youdaoMode, youdaoSyncResult, YoudaoTab, readPacks, writePacks, readMaxHanRatioRaw, readTranslator, writeTranslator, translatorChain, ensureSettingsStyle }
     })()
 
     // ═══ card.js ═══
     var __mod_card = (function () {
       var { attachDrag } = __mod_drag
+      var { PronounceButton } = __mod_review
 /**
  * card.js —— 点击单词后就地摊开的「大卡片」。
  *
@@ -4747,6 +9192,10 @@ window.__ModuleLoader__.load({
       // 当前词在生词本里 → 标题标红
           style: inBook ? { color: 'var(--dsw-alias-state-error-primary, #e5484d)' } : undefined,
         }, props.word ?? '')),
+    // 发音按钮：紧挨词头（设计 §E1）。刻意放在拖动把手**外面** —— 把手
+    // 会 preventDefault + 抢指针捕获，放里面按钮就收不到点击（星标踩过这个坑）。
+    // 不支持 speechSynthesis 时 PronounceButton 自己返回 null，不留死按钮。
+        h(PronounceButton, { key: 'speak', word: props.word ?? '' }),
         h('button', {
           key: 'star',
           className: `hd-star${inBook ? ' hd-star-on' : ''}`,
@@ -4777,6 +9226,19 @@ window.__ModuleLoader__.load({
 
       if (entry.senses.length > 0) {
         children.push(h(SenseGroups, { key: 'senses', groups: entry.senses }))
+      } else if (props.gloss && String(props.gloss).trim() !== '') {
+    // 词库查不到，但有释义快照（导入/有道抓回来的）→ 直接展示快照
+        children.push(h('div', { key: 'gloss', className: 'hd-zh', style: { marginTop: 2 } }, String(props.gloss).trim()))
+      } else {
+    // 词库未收录：老实说查不到，不假装给释义（CETgo 口径，设计 §E2）。
+    // 「仍要收藏」复用现成的 onToggleStar —— 收藏后 gloss 留空，
+    // 管理台会显示未收录徽章（t2 已做）。已在生词本时这句改成状态提示。
+        children.push(h(MissNotice, {
+          key: 'miss',
+          word: props.word ?? '',
+          inBook,
+          onToggleStar: props.onToggleStar,
+        }))
       }
   // 词形变化：这些形式若在生词本里同样标红
       if (entry.forms.length > 0) {
@@ -4907,16 +9369,93 @@ window.__ModuleLoader__.load({
       }))
     }
 
-      return { pickUpgradeTarget, splitExample, CardRoot, SenseGroups, Examples }
+/**
+ * 词库未收录时的说明块（设计 §E2）。
+ *
+ * 口径是「不假装给释义」：词库没有就说没有，别猜、别拿拼音凑。
+ * 但用户**主动**点开了一个生僻词，往往正因为他想记住它 ——
+ * 所以这里必须留一个「仍要收藏」的出口，而不是一句冷冰冰的查不到。
+ *
+ * @param {object} props
+ * @param {string} props.word
+ * @param {boolean} props.inBook
+ * @param {() => void} [props.onToggleStar]
+ * @returns {import('react').ReactElement}
+ */
+    function MissNotice(props) {
+      const inBook = props.inBook === true
+      return h('div', {
+        style: {
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 8,
+          padding: '10px 12px',
+          borderRadius: 8,
+          border: '1px dashed var(--dsw-alias-border-l2, rgba(127,127,127,.35))',
+          background: 'var(--dsw-alias-bg-layer-1, rgba(127,127,127,.08))',
+        },
+      }, [
+        h('div', {
+          key: 'text',
+          style: {
+            fontSize: '.94em',
+            lineHeight: 1.8,
+            color: 'var(--dsw-alias-label-secondary, #666)',
+          },
+        }, '词库未收录，暂无释义'),
+        h('div', {
+          key: 'row',
+          style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' },
+        }, [
+          inBook
+            ? h('span', {
+              key: 'state',
+              style: { fontSize: '.88em', color: 'var(--dsw-alias-state-warn-primary, #f0a441)' },
+            }, '已在生词本 · 未收录')
+            : h('button', {
+              key: 'save',
+              type: 'button',
+              title: `把 ${props.word || '这个词'} 加入生词本（释义留空）`,
+              onPointerDown: (event) => event.stopPropagation(),
+              onMouseDown: (event) => { event.preventDefault(); event.stopPropagation() },
+              onClick: (event) => {
+                event.preventDefault()
+                event.stopPropagation()
+                props.onToggleStar?.()
+              },
+              style: {
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 5,
+                padding: '3px 11px',
+                borderRadius: 7,
+                border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.4))',
+                background: 'transparent',
+                color: 'var(--dsw-alias-brand-primary, #4d6bfe)',
+                font: 'inherit',
+                fontSize: '.92em',
+                cursor: 'pointer',
+              },
+            }, '仍要收藏'),
+          h('span', {
+            key: 'hint',
+            style: { fontSize: '.86em', color: 'var(--dsw-alias-label-secondary, #999)' },
+          }, '收录后可以在生词本里自己写备注'),
+        ]),
+      ])
+    }
+
+      return { pickUpgradeTarget, splitExample, CardRoot, SenseGroups, Examples, MissNotice }
     })()
 
     // ═══ app.js ═══
     var __mod_app = (function () {
-      var { loadUx, tagLabel } = __mod_config
+      var { loadUx, STORAGE_KEY, tagLabel } = __mod_config
       var { briefOf, buildIndex, describeEntry, loadDictionary, lookup } = __mod_dict
       var { fetchAsset, humanizeError } = __mod_net
       var { computeOverlayRect } = __mod_position
-      var { ensureStyle, PopoverBody, PhraseBody, UI_ATTR } = __mod_overlay
+      var { ensureStyle, MarkerLayerHost, PopoverBody, PhraseBody, UI_ATTR } = __mod_overlay
+      var { buildMarks, buildHighlightRanges, applyHighlights, clearHighlights, highlightCss, supportsHighlight, bindRecalcEvents, createRecalcScheduler, expandWordSet, MARK_MAX } = __mod_marker
       var { CardRoot } = __mod_card
       var { caretAtPoint, DEFAULT_MAX_HAN_RATIO, rangeRects, readSelection, unionOf } = __mod_selection
       var { SELECTORS } = __mod_hit
@@ -4949,7 +9488,12 @@ window.__ModuleLoader__.load({
  *   - 点浮层 → 展开完整词条
  *   - 点浮层外面 / Esc → 关闭
  *
- * 刻意**不**做「未收录」提示：变量名与专有名词太多，逐个提示比沉默更吵。
+ * 关于「未收录」提示（v1.3 起改口径）：
+ *   v1 是**一律静默**，理由是变量名与专有名词太多，逐个提示比沉默更吵。
+ *   设计-v2 §E2 改成：**用户主动点开**一个词而词库查不到时，弹一句
+ *   「词库未收录，已加入查词记录」并给「仍要收藏」出口 —— 用户主动去点它，
+ *   往往正是因为想记住它，这时沉默等于丢掉了他的意图。
+ *   被动扫描（marker 着色）依旧完全静默，不产生任何提示。
  */
 
 /**
@@ -5004,12 +9548,17 @@ window.__ModuleLoader__.load({
         const doc = typeof document !== 'undefined' ? document : undefined
         if (!doc) return
 
+    /** 注入/刷新样式。::highlight 的 color 依赖用户配置，改色后要重刷（即时生效）。 */
         let disposeStyle = () => {}
-        try {
-          disposeStyle = ensureStyle(doc)
-        } catch (error) {
-          warn('样式注入失败', error)
+        const refreshStyle = (appearance) => {
+          try {
+        // 幂等：内容没变就不动节点（ensureStyle 内部比对），变了才替换 textContent
+            disposeStyle = ensureStyle(doc, appearance)
+          } catch (error) {
+            warn('样式注入失败', error)
+          }
         }
+        refreshStyle(undefined)
 
     // 取 slots 优先用 ctx.get（安全探测），取不到再退回属性访问。
     //
@@ -5031,6 +9580,9 @@ window.__ModuleLoader__.load({
 
         const storage = safeStorage()
         const ux = loadUx(storage)
+    // 拿到用户配置后再刷一次：首次调用时 appearance 还是 undefined，::highlight
+    // 只能是默认色，这里补上用户实际选的颜色/是否显示已掌握。
+        refreshStyle(ux.appearance)
 
         const runtime = {
           ux,
@@ -5047,6 +9599,8 @@ window.__ModuleLoader__.load({
           translateError: '',
       /** skip 时的提示文字 */
           notice: '',
+      /** 词库未收录时用户主动点开的那个词头（notice 形态的「仍要收藏」要用） */
+          missKey: '',
           placement: null,
           listeners: new Set(),
       /** 生词本实例与它的版本号（用来触发重渲染） */
@@ -5059,13 +9613,230 @@ window.__ModuleLoader__.load({
           packsMerged: false,
       /** 词库包目录的真实路径，由宿主 health 接口告知 */
           packsDir: '',
+      /** 生词着色：这一帧要画的色块（marker.js buildMarks 的结果，几何已算好） */
+          marks: [],
+      /** 着色用的词集（expandWordSet 结果：键 → 是否已掌握） */
+          markKeys: new Map(),
+      /** 当前着色命中的词数（Highlight 路径下没有色块，只有这个计数） */
+          markCount: 0,
+      /** 上一次看到的 localStorage 原文，用来发现设置页改了外观而不必轮询 */
+          uxRaw: '',
+      /** 着色诊断：单帧耗时、色块数、时间戳（性能预算 <16ms 的观测点） */
+          markStats: { lastMs: 0, count: 0, at: 0 },
         }
+
+    /** 卸载时的清理函数栈。着色接线那一段已经要往里 push，所以放在最前面。 */
+        const dispose = []
 
         const notify = () => {
           for (const listener of runtime.listeners) {
             try { listener() } catch { /* ignore */ }
           }
         }
+
+    /* ── 生词着色（设计-v2 §C2） ─────────────────────────────────────────
+     *
+     * 这里只做**接线**：词集展开、扫描、量矩形、裁剪、截断全在 marker.js 的纯函数里，
+     * 本段负责「什么时候算」与「把结果放进 runtime 让 React 画」。
+     *
+     * 三条硬约束：
+     *   1. 绝不改正文 DOM —— 这里只有读：createTreeWalker 遍历文本节点、
+     *      Range.getClientRects 量矩形。写只写本插件覆盖层里的 div。
+     *   2. 不许每帧扫全文 —— 滚动节流 120ms、正文变化防抖 250ms（§G 硬要求）、
+     *      resize 立即重算，三个入口都由 createRecalcScheduler 合并。
+     *   3. 色块上限 400，超了按距视口中心距离取最近的（capMarks 内部做）。
+     */
+
+    /** 重读 localStorage 里的界面参数（设置页改完要立刻生效，不等重启）。 */
+        const reloadUx = () => {
+          const next = loadUx(storage)
+          runtime.ux = next
+          runtime.uxRaw = rawUx()
+      // 改色/开关 → 重刷 ::highlight 规则（这是「即时生效」的落点，不等重启）
+          refreshStyle(next.appearance)
+          return next
+        }
+
+        const rawUx = () => {
+          try {
+            const raw = storage?.getItem?.(STORAGE_KEY)
+            return typeof raw === 'string' ? raw : ''
+          } catch {
+            return ''
+          }
+        }
+
+    /**
+     * 重算词集。生词本或词库或「已掌握也淡色」开关变化时都要重来。
+     *
+     * @returns {Map<string, boolean>} 键 → 是否已掌握
+     */
+        const rebuildMarkKeys = () => {
+          const keys = expandWordSet({
+            entries: runtime.wordbook?.list() ?? [],
+            dict: runtime.dict,
+            markKnown: runtime.ux.appearance.markKnown === true,
+          })
+          runtime.markKeys = keys
+          return keys
+        }
+
+    /** 一次重算：算出色块放进 runtime，然后通知 React 重绘。 */
+        const recalcMarks = () => {
+          const started = Date.now()
+      // 兜底：有些环境给 localStorage 的属性加了只读描述符，setItem 拦不住，
+      // 那时靠这里比对原文发现「用户刚在设置页改了颜色」（改色/关闭即时生效）。
+          try {
+            const raw = rawUx()
+            if (raw !== runtime.uxRaw) reloadUx()
+          } catch { /* ignore */ }
+          const appearance = runtime.ux.appearance
+          const keys = runtime.markKeys instanceof Map && runtime.markKeys.size > 0
+            ? runtime.markKeys
+            : rebuildMarkKeys()
+
+      // markWords 关掉 / 词集空 / 词库没就绪 → 清干净返回，什么节点都不碰（§C2.5）
+          const off = appearance.markWords === false || keys.size === 0 || runtime.dict === null
+          if (off) {
+            try { clearHighlights(typeof window !== 'undefined' ? window : undefined) } catch { /* ignore */ }
+            const had = runtime.marks.length > 0 || runtime.markCount > 0
+            runtime.marks = []
+            runtime.markCount = 0
+            runtime.markStats = { lastMs: 0, count: 0, at: started, mode: highlightOn ? 'highlight' : 'overlay' }
+            if (had) notify()
+            return
+          }
+
+      // ── 主路径：Highlight API（只要字色，滚动天然跟字） ──
+          if (highlightOn) {
+            let built = null
+            try {
+              built = buildHighlightRanges({ doc, keys })
+            } catch {
+              built = null
+            }
+            if (built) {
+              const applied = applyHighlights({
+                scope: typeof window !== 'undefined' ? window : undefined,
+                ranges: built.ranges,
+                knownRanges: appearance.markKnown === true ? built.knownRanges : [],
+              })
+              if (applied.ok) {
+                runtime.marks = []
+                runtime.markCount = built.stats.words + built.stats.known
+                runtime.markStats = {
+                  lastMs: Date.now() - started,
+                  count: runtime.markCount,
+                  at: started,
+                  mode: 'highlight',
+                }
+                notify()
+                return
+              }
+            }
+        // Highlight 注册失败（半支持的环境）→ 落到下面走色块回退
+          }
+
+      // ── 回退路径：overlay 色块（老浏览器；行为与 v2 早期一致） ──
+          let marks = []
+          try {
+            marks = buildMarks({ doc, keys, max: MARK_MAX })
+          } catch {
+        // 流式输出期间节点可能刚好被宿主换掉，量矩形炸了不该带走整个插件
+            marks = []
+          }
+          runtime.marks = marks
+          runtime.markCount = marks.length
+          runtime.markStats = { lastMs: Date.now() - started, count: marks.length, at: started, mode: 'overlay' }
+          notify()
+        }
+
+        const markScheduler = createRecalcScheduler({ run: recalcMarks })
+
+    /**
+     * 着色主路径的开关：环境支持 CSS Custom Highlight API 就用它（用户裁定只要字色）。
+     *
+     * Highlight 的颜色是浏览器渲染时跟着文字走的，**滚动不需要任何重算** ——
+     * 之前那套 rAF 逐帧重测 / 双速架构就是为色块偏移打的补丁，换成 Highlight 后
+     * 那套整体删掉了（纯滚动不改文字内容时 ranges 仍有效）。
+     *
+     * 不支持的环境回退到色块方案（buildMarks + MarkerLayer），行为不变。
+     */
+        const highlightOn = supportsHighlight(typeof window !== 'undefined' ? window : undefined)
+
+    /**
+     * 发现设置页改了外观就重载 + 重算。
+     *
+     * 为什么要这一层：settings.js 写的是 localStorage，而同一个 document 里
+     * `storage` 事件**不会**触发（那个事件只发到别的窗口/标签页）。所以要么
+     * 拦 setItem，要么轮询原文。两个都做：拦得到就是即时的，拦不到（有些环境
+     * 把 localStorage 的方法做成只读）就靠下一次渲染或重算时比对原文兜住。
+     */
+        const onUxMaybeChanged = () => {
+          const raw = rawUx()
+          if (raw === runtime.uxRaw) return
+          reloadUx()
+          notify()
+          markScheduler.request()
+        }
+
+        const patchStorageWatch = () => {
+          if (!storage || typeof storage.setItem !== 'function') return () => {}
+          const original = storage.setItem
+          let ok = false
+          try {
+            storage.setItem = function patchedSetItem(key, value) {
+              const result = original.call(this, key, value)
+              try { if (key === STORAGE_KEY) onUxMaybeChanged() } catch { /* ignore */ }
+              return result
+            }
+            ok = true
+          } catch {
+            ok = false
+          }
+          return () => {
+            if (!ok) return
+            try { storage.setItem = original } catch { /* ignore */ }
+          }
+        }
+
+        runtime.uxRaw = rawUx()
+        if (storage !== undefined && typeof storage.getItem === 'function' && runtime.uxRaw === '') {
+      // 首帧没有存档：把当前默认值记成基准，避免第一次比对就误判成「变了」
+          runtime.uxRaw = rawUx()
+        }
+        dispose.push(patchStorageWatch())
+
+    /**
+     * 首扫：词库 ready 且生词本 ready 之后，在空闲帧跑一次。
+     *
+     * 不放在 apply 里同步跑：词库要 30ms 解析、生词本要读 KV，
+     * 抢首帧会白屏一瞬（§C2.4「初次」）。
+     */
+        const scheduleMarkScan = () => {
+          const run = () => {
+            try {
+              rebuildMarkKeys()
+              recalcMarks()
+            } catch (error) {
+              warn('着色首扫失败', error)
+            }
+          }
+          if (typeof requestIdleCallback === 'function') {
+            const handle = requestIdleCallback(run, { timeout: 3000 })
+            dispose.push(() => { try { cancelIdleCallback(handle) } catch { /* ignore */ } })
+          } else {
+            const handle = setTimeout(run, 300)
+            dispose.push(() => clearTimeout(handle))
+          }
+        }
+
+    // 滚动（含流式程序滚动）/ 正文变化 / resize 三个入口。
+    //
+    // 走 Highlight 时纯滚动不需要重算（颜色跟文字走），但滚动仍要触发一次节流重算：
+    // 滚动会带来「新一批文本节点进入 DOM」的可能（虚拟列表），且成本只有一次
+    // ranges 重建（不量矩形，比色块路径更便宜）。resize 会改变换行，必须重算。
+        dispose.push(bindRecalcEvents({ doc, scheduler: markScheduler }))
 
         let machine = null
         let translateAbort = null
@@ -5108,6 +9879,11 @@ window.__ModuleLoader__.load({
             runtime.dict = await loadDictionary()
             runtime.status = 'ready'
             runtime.errorMessage = ''
+        // 词库到手才能展开变位 → 词集重算 + 首扫（生词本可能已经 ready 了）
+            try {
+              rebuildMarkKeys()
+              markScheduler.request()
+            } catch { /* ignore */ }
             void mergePacks()
           } catch (error) {
             runtime.status = 'error'
@@ -5199,10 +9975,28 @@ window.__ModuleLoader__.load({
           runtime.translateError = ''
           runtime.translating = false
           runtime.notice = ''
+          runtime.missKey = ''
 
           if (selection.kind === 'word') {
             const hit = lookupWord(selection.key)
             if (hit === null) {
+          // 词库未收录。设计-v2 §E2 分两种情况：
+          //   - 用户**主动点**这个词（单击取词 / 双击选词）→ 弹一句说明，
+          //     并记录这次查词（touch 对不在生词本里的词是 no-op，所以这里
+          //     先记进 runtime 里，等用户真收藏了才会落库）；
+          //   - 不是主动点的（理论上不会走到这）→ 保持 v1 的静默。
+              if (selection.byPick === true) {
+                runtime.result = null
+                runtime.entryRaw = null
+                runtime.missKey = selection.key
+                runtime.notice = '词库未收录，已加入查词记录'
+                runtime.mode = 'notice'
+                runtime.placement = placeFor('popover', bounds)
+            // 主动点开的词先记一次「查过」：已在生词本里就 seen+1
+                void runtime.wordbook?.touch?.(selection.key)
+                notify()
+                return
+              }
               runtime.mode = 'none'
               runtime.placement = null
               notify()
@@ -5210,8 +10004,13 @@ window.__ModuleLoader__.load({
             }
             runtime.result = hit
             runtime.entryRaw = hit.entry
+            runtime.missKey = ''
             runtime.mode = 'popover'
             runtime.placement = placeFor('popover', bounds)
+        // 设计 §E2：浮层一弹出来就算「查过一次」（seen+1，lastSeenAt 更新）。
+        // touch 对不在生词本里的词是 no-op —— 只记录已收藏词的查词次数，
+        // 不会因为随手点一个词就往生词本里塞记录。
+            void runtime.wordbook?.touch?.(selection.key)
             notify()
             return
           }
@@ -5252,6 +10051,8 @@ window.__ModuleLoader__.load({
             key: hit.text.replace(/[\u2018\u2019]/g, "'").toLowerCase(),
             rects,
             collapsed: true,
+        // 用户明确点了一个词：miss 时可以弹提示（设计 §E2）
+            byPick: true,
           })
           machine.feed({ kind: 'select' })
           return runtime.mode === 'popover'
@@ -5264,12 +10065,12 @@ window.__ModuleLoader__.load({
           runtime.entryRaw = null
           runtime.translation = null
           runtime.notice = ''
+          runtime.missKey = ''
           runtime.placement = null
           machine.feed({ kind: 'dismiss' })
           notify()
         }
 
-        const dispose = []
         let downAt = null
         let downSelectionText = ''
         let lastText = ''
@@ -5371,7 +10172,8 @@ window.__ModuleLoader__.load({
           if (inComposer(anchorNode)) return false
           if (selection.text === lastText && runtime.mode !== 'none') return true
           lastText = selection.text
-          applySelection(selection)
+      // 划选/双击也是用户主动指向某个词，miss 时同样该给提示（短语另走翻译分支）
+          applySelection({ ...selection, byPick: selection.kind === 'word' })
           machine.feed({ kind: 'select' })
           return true
         }
@@ -5480,27 +10282,17 @@ window.__ModuleLoader__.load({
      * 用户要的是「这个词我背过」，而不是「这个字符串我背过」。
      */
         const collectBookSet = (rt) => {
-          const out = new Set()
-          if (!rt.wordbook || rt.status !== 'ready' || !rt.dict) {
-            for (const entry of rt.wordbook?.list() ?? []) out.add(entry.head)
-            return out
-          }
-          for (const entry of rt.wordbook.list()) {
-            out.add(entry.head)
-            const node = rt.dict.entries[entry.head]
-            if (!node) continue
-            for (let i = 5; i < node.length; i += 1) {
-              const slot = node[i]
-              if (typeof slot !== 'string') continue
-              for (const part of slot.split('/')) {
-                const colon = part.indexOf(':')
-                if (colon <= 0) continue
-                const form = part.slice(colon + 1).trim().toLowerCase()
-                if (form) out.add(form)
-              }
-            }
-          }
-          return out
+      // 词集展开的规则（槽 5 起、`p:ran/i:running`、词头优先）只在 marker.js 里写一份，
+      // 这里复用同一份实现，避免「卡片上标红的变位」和「正文着色的变位」两套口径漂移。
+      //
+      // 与着色词集的唯一差别：卡片里 known 的词也要参与（用户的词条上要看得出
+      // 「这个词我背过」，只是着色的默认口径不含 known）。所以这里 markKnown 恒为 true。
+          const keys = expandWordSet({
+            entries: rt.wordbook?.list() ?? [],
+            dict: rt.status === 'ready' ? rt.dict : null,
+            markKnown: true,
+          })
+          return new Set(keys.keys())
         }
 
     /**
@@ -5534,12 +10326,26 @@ window.__ModuleLoader__.load({
             translating: runtime.translating,
             translateError: runtime.translateError,
             placement: runtime.placement,
+            notice: runtime.notice,
+            missKey: runtime.missKey,
             status: runtime.status,
             errorMessage: runtime.errorMessage,
             ux: runtime.ux,
             bookVersion: runtime.bookVersion,
             inBook: runtime.selection ? runtime.wordbook?.has(runtime.selection.key) === true : false,
+        /** 当前词的词条（浮层要显示「已在生词本 · 状态」，见设计 §C3） */
+            inBookEntry: runtime.selection && runtime.wordbook
+              ? (runtime.wordbook.get(runtime.selection.key) ?? null)
+              : null,
             inBookSet: collectBookSet(runtime),
+        /** 着色要画的色块（几何已由 marker.js 算好） */
+            marks: runtime.marks,
+        /** 着色诊断：单帧耗时与色块数，设置页与单测可读 */
+            markStats: runtime.markStats ?? { lastMs: 0, count: 0, at: 0, mode: highlightOn ? 'highlight' : 'overlay' },
+        /** 当前着色词数（Highlight 路径用；overlay 路径等于色块数） */
+            markCount: runtime.markCount ?? 0,
+        /** 当前着色走哪条路径：'highlight' 主路径 / 'overlay' 回退 */
+            markMode: highlightOn ? 'highlight' : 'overlay',
             family: runtime.selection && runtime.dict
               ? familyOf(runtime.dict, runtime.selection.key)
               : { inflections: [], derived: [] },
@@ -5566,6 +10372,23 @@ window.__ModuleLoader__.load({
             onToggleStar: () => {
               if (!runtime.wordbook || !runtime.selection) return
               void runtime.wordbook.toggle(runtime.selection.key)
+            },
+        /**
+         * 词库未收录的词「仍要收藏」（设计 §E2）。
+         *
+         * 用 add(key,'manual') 而不是 toggle：notice 形态下用户点的是
+         * 「要收下它」，不是「切换状态」。gloss 留空 —— 我们确实没有释义，
+         * 不编一个出来（CETgo 口径）。管理台会给它「未收录」徽章。
+         */
+            onSaveMiss: () => {
+              const key = runtime.missKey
+              if (!key || !runtime.wordbook) return
+              void Promise.resolve(runtime.wordbook.add(key, 'manual')).then(() => {
+                runtime.missKey = ''
+                runtime.notice = '词库未收录，已加入生词本（释义留空，可在设置里写备注）'
+                notify()
+                markScheduler?.request?.()
+              }).catch(() => { /* 写盘失败：notice 保持原样 */ })
             },
             onSelectWord: (word) => {
               if (typeof word !== 'string' || word === '') return
@@ -5706,11 +10529,20 @@ window.__ModuleLoader__.load({
           runtime.wordbook = createWordbook({ storage: hostStorage, local: storage })
           runtime.wordbook.subscribe(() => {
             runtime.bookVersion += 1
+        // 生词本一变：词集要重算，色块也要重扫（收藏/移出/改状态的即时反馈，§C2.4）
+            try {
+              rebuildMarkKeys()
+              markScheduler.request()
+            } catch (error) {
+              warn('生词本变化后重算着色失败', error)
+            }
             notify()
           })
           await runtime.wordbook.ready()
           runtime.bookVersion += 1
           notify()
+      // 词库与生词本都就绪 → 空闲帧首扫（§C2.4「初次」）
+          scheduleMarkScan()
         }
 
         const scheduleLoad = () => {
@@ -5746,6 +10578,8 @@ window.__ModuleLoader__.load({
             try { translateAbort?.abort() } catch { /* ignore */ }
             try { machine.dispose() } catch { /* ignore */ }
             try { disposeStyle() } catch { /* ignore */ }
+        // 关键：卸载后必须清掉 CSS.highlights 注册，否则正文会一直挂着我们的字色
+            try { clearHighlights(typeof window !== 'undefined' ? window : undefined) } catch { /* ignore */ }
           }, 'dsh-hover-dict: 监听与 slot 清理')
         }
       } catch (error) {
@@ -5781,10 +10615,21 @@ window.__ModuleLoader__.load({
         if (!snapshot) return null
         const {
           mode, selection, result, entryRaw, translation, translating, translateError,
-          placement, ux, status, errorMessage, inBook, inBookSet, family, roots,
+          placement, ux, status, errorMessage, inBook, inBookEntry, inBookSet, family, roots,
+          marks, notice, missKey,
         } = snapshot
         const actions = props.actions ?? {}
         const children = []
+
+    // ── 生词着色层（设计 §C2.2）：**第一个** child ──
+    // 放第一个是为了让它画在浮层/卡片之下（DOM 顺序 + CSS z-index:0 双保险）。
+    // 它 pointer-events:none，点击穿透到正文，现有单击取词不受影响（§C3）。
+    // markWords=false 时 MarkerLayerHost 直接返回 null，等于完全不变色。
+        children.push(h(MarkerLayerHost, {
+          key: 'markers',
+          marks,
+          appearance: ux?.appearance,
+        }))
 
         if (mode === 'popover' && placement && result) {
           children.push(h('div', {
@@ -5803,6 +10648,8 @@ window.__ModuleLoader__.load({
             appearance: ux.appearance,
             tagLabel: props.tagLabel,
             inBook,
+        // 「已在生词本 · 状态」小字行的数据源（§C3）
+            entry: inBookEntry,
             onToggleStar: () => actions.onToggleStar?.(),
           })))
         }
@@ -5829,6 +10676,9 @@ window.__ModuleLoader__.load({
         }
 
         if (mode === 'notice' && placement && notice) {
+      // 设计 §E2：词库未收录时给一句说明 + 「仍要收藏」。
+      // 已经收下了（inBook 且 missKey 已清空）就不再显示按钮，避免重复点。
+          const canSave = missKey !== '' && inBook !== true
           children.push(h('div', {
             key: 'notice',
             className: 'hd-pop',
@@ -5836,10 +10686,48 @@ window.__ModuleLoader__.load({
               top: `${placement.top}px`,
               left: `${placement.left}px`,
               pointerEvents: 'auto',
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 8,
               color: 'var(--dsw-alias-label-secondary, #666)',
             },
             onMouseDown: (event) => { event.preventDefault(); event.stopPropagation() },
-          }, h('div', { className: 'hd-more' }, notice)))
+          }, [
+            h('div', { key: 'text', className: 'hd-more' }, notice),
+            canSave
+              ? h('div', { key: 'row', style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' } }, [
+                h('button', {
+                  key: 'save',
+                  type: 'button',
+                  className: 'hd-star',
+                  title: '把这个词加入生词本（释义留空）',
+                  onMouseDown: (event) => { event.preventDefault(); event.stopPropagation() },
+                  onClick: (event) => {
+                    event.preventDefault()
+                    event.stopPropagation()
+                    actions.onSaveMiss?.()
+                  },
+                  style: {
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 5,
+                    padding: '3px 11px',
+                    borderRadius: 7,
+                    border: '1px solid var(--dsw-alias-border-l2, rgba(127,127,127,.4))',
+                    background: 'transparent',
+                    color: 'var(--dsw-alias-brand-primary, #4d6bfe)',
+                    font: 'inherit',
+                    fontSize: '12px',
+                    cursor: 'pointer',
+                  },
+                }, '仍要收藏'),
+                h('span', {
+                  key: 'hint',
+                  style: { fontSize: '11px', color: 'var(--dsw-alias-label-secondary, #999)' },
+                }, '释义留空，可在生词本里自己写备注'),
+              ])
+              : null,
+          ]))
         }
 
         if (mode === 'phrase' && placement) {
@@ -5900,56 +10788,114 @@ window.__ModuleLoader__.load({
     exports.inject = __mod_app.inject
 
     // ── 纯函数透出给测试（不影响宿主） ──
+    exports.AGAIN_DELAY_MS = __mod_srs.AGAIN_DELAY_MS
+    exports.AHEAD_COUNT = __mod_review.AHEAD_COUNT
     exports.API_PREFIX = __mod_net.API_PREFIX
     exports.C = __mod_ui.C
     exports.CardRoot = __mod_card.CardRoot
+    exports.DAY_MS = __mod_srs.DAY_MS
     exports.DEFAULT_APPEARANCE = __mod_config.DEFAULT_APPEARANCE
+    exports.DEFAULT_MARK_COLOR = __mod_config.DEFAULT_MARK_COLOR
     exports.DEFAULT_MAX_HAN_RATIO = __mod_selection.DEFAULT_MAX_HAN_RATIO
     exports.DEFAULT_TIMING = __mod_config.DEFAULT_TIMING
     exports.DEFAULT_UX = __mod_config.DEFAULT_UX
+    exports.DIRECTIONS = __mod_review.DIRECTIONS
     exports.DRAG_THRESHOLD_PX = __mod_drag.DRAG_THRESHOLD_PX
     exports.EASE = __mod_ui.EASE
+    exports.EASE_MAX = __mod_srs.EASE_MAX
+    exports.EASE_MIN = __mod_srs.EASE_MIN
     exports.Examples = __mod_card.Examples
     exports.FS = __mod_ui.FS
     exports.GAP = __mod_ui.GAP
+    exports.GRADE_BUTTONS = __mod_review.GRADE_BUTTONS
+    exports.HIGHLIGHT_KNOWN = __mod_marker.HIGHLIGHT_KNOWN
+    exports.HIGHLIGHT_WORDS = __mod_marker.HIGHLIGHT_WORDS
     exports.HIT_BLOCKERS = __mod_hit.HIT_BLOCKERS
+    exports.IMPORT_FORMATS = __mod_importer.IMPORT_FORMATS
+    exports.INTERVAL_MAX = __mod_srs.INTERVAL_MAX
+    exports.ImportTab = __mod_settings.ImportTab
+    exports.KNOWN_INTERVAL = __mod_srs.KNOWN_INTERVAL
+    exports.MARK_COLOR_PRESETS = __mod_config.MARK_COLOR_PRESETS
+    exports.MARK_MAX = __mod_marker.MARK_MAX
+    exports.MARK_STYLES = __mod_config.MARK_STYLES
     exports.MAX_SELECTION_CHARS = __mod_selection.MAX_SELECTION_CHARS
     exports.MAX_WORD_LEN = __mod_word.MAX_WORD_LEN
+    exports.MUTATION_DEBOUNCE_MS = __mod_marker.MUTATION_DEBOUNCE_MS
+    exports.MarkerLayer = __mod_marker.MarkerLayer
+    exports.MarkerLayerHost = __mod_overlay.MarkerLayerHost
+    exports.MissNotice = __mod_card.MissNotice
     exports.OverlayHost = __mod_app.OverlayHost
     exports.PhraseBody = __mod_overlay.PhraseBody
     exports.PopoverBody = __mod_overlay.PopoverBody
+    exports.PronounceButton = __mod_review.PronounceButton
     exports.RADIUS = __mod_ui.RADIUS
+    exports.REVIEW_FILTERS = __mod_review.REVIEW_FILTERS
+    exports.ReviewCardBack = __mod_review.ReviewCardBack
+    exports.ReviewTab = __mod_settings.ReviewTab
+    exports.SCROLL_THROTTLE_MS = __mod_marker.SCROLL_THROTTLE_MS
     exports.SELECTORS = __mod_hit.SELECTORS
+    exports.SRS_GRADES = __mod_srs.SRS_GRADES
     exports.STORAGE_KEY = __mod_config.STORAGE_KEY
     exports.SenseGroups = __mod_card.SenseGroups
     exports.SettingsPanel = __mod_settings.SettingsPanel
     exports.StatusNote = __mod_overlay.StatusNote
+    exports.THEME_ERROR_COLOR = __mod_config.THEME_ERROR_COLOR
+    exports.THINK_SELECTOR = __mod_marker.THINK_SELECTOR
     exports.UI_ATTR = __mod_overlay.UI_ATTR
     exports.VIEWPORT_PAD = __mod_drag.VIEWPORT_PAD
-    exports.WORD_PACKS = __mod_settings.WORD_PACKS
+    exports.VIEWPORT_PAD_PX = __mod_marker.VIEWPORT_PAD_PX
+    exports.WORD_PATTERN = __mod_marker.WORD_PATTERN
+    exports.WORD_STATES = __mod_srs.WORD_STATES
+    exports.YoudaoTab = __mod_settings.YoudaoTab
+    exports.actionForKey = __mod_review.actionForKey
+    exports.aheadQueue = __mod_review.aheadQueue
     exports.anchorOf = __mod_anchor.anchorOf
+    exports.appearanceTab = __mod_settings.appearanceTab
+    exports.applyHighlights = __mod_marker.applyHighlights
     exports.attachDrag = __mod_drag.attachDrag
+    exports.bindRecalcEvents = __mod_marker.bindRecalcEvents
+    exports.blockerOf = __mod_marker.blockerOf
+    exports.bookTab = __mod_settings.bookTab
+    exports.booksOfEntry = __mod_review.booksOfEntry
     exports.briefOf = __mod_dict.briefOf
+    exports.briefTextFor = __mod_review.briefTextFor
+    exports.buildHighlightRanges = __mod_marker.buildHighlightRanges
     exports.buildIndex = __mod_dict.buildIndex
+    exports.buildMarks = __mod_marker.buildMarks
+    exports.canSpeak = __mod_review.canSpeak
+    exports.capMarks = __mod_marker.capMarks
+    exports.cardBackFor = __mod_review.cardBackFor
     exports.caretAt = __mod_hit.caretAt
     exports.caretAtPoint = __mod_selection.caretAtPoint
     exports.clampAppearance = __mod_config.clampAppearance
     exports.clampTiming = __mod_config.clampTiming
     exports.clampToViewport = __mod_drag.clampToViewport
     exports.classifySelection = __mod_selection.classifySelection
+    exports.clearHighlights = __mod_marker.clearHighlights
+    exports.collectTextNodes = __mod_marker.collectTextNodes
+    exports.colorMix = __mod_marker.colorMix
     exports.computeCardPlacement = __mod_position.computeCardPlacement
     exports.computeOverlayRect = __mod_position.computeOverlayRect
     exports.computePopoverPlacement = __mod_position.computePopoverPlacement
     exports.containsPoint = __mod_position.containsPoint
     exports.createHoverMachine = __mod_app.createHoverMachine
+    exports.createRecalcScheduler = __mod_marker.createRecalcScheduler
     exports.createWordbook = __mod_wordbook.createWordbook
+    exports.cullToViewport = __mod_marker.cullToViewport
+    exports.defaultSrs = __mod_srs.defaultSrs
     exports.describeEntry = __mod_dict.describeEntry
+    exports.detectImportFormat = __mod_importer.detectImportFormat
     exports.dragPosition = __mod_drag.dragPosition
+    exports.dueLabel = __mod_review.dueLabel
     exports.ensureSettingsStyle = __mod_settings.ensureSettingsStyle
     exports.ensureStyle = __mod_overlay.ensureStyle
+    exports.expandWordSet = __mod_marker.expandWordSet
     exports.familyOf = __mod_family.familyOf
     exports.fetchAsset = __mod_net.fetchAsset
+    exports.filterQueue = __mod_review.filterQueue
+    exports.glossText = __mod_importer.glossText
     exports.hanRatio = __mod_selection.hanRatio
+    exports.highlightCss = __mod_marker.highlightCss
     exports.hintStyle = __mod_ui.hintStyle
     exports.hitsAny = __mod_selection.hitsAny
     exports.humanizeError = __mod_net.humanizeError
@@ -5964,31 +10910,56 @@ window.__ModuleLoader__.load({
     exports.loadUx = __mod_config.loadUx
     exports.lookup = __mod_dict.lookup
     exports.makePrimitives = __mod_ui.makePrimitives
+    exports.markColorToCss = __mod_marker.markColorToCss
+    exports.markCss = __mod_marker.markCss
+    exports.matchWordsInText = __mod_marker.matchWordsInText
+    exports.measureHits = __mod_marker.measureHits
+    exports.nextSrs = __mod_srs.nextSrs
     exports.nodeIdentity = __mod_anchor.nodeIdentity
     exports.normalizeKey = __mod_word.normalizeKey
+    exports.normalizeMarkColor = __mod_config.normalizeMarkColor
+    exports.normalizeSrs = __mod_srs.normalizeSrs
+    exports.normalizeViewport = __mod_marker.normalizeViewport
     exports.parseForms = __mod_dict.parseForms
+    exports.parseImportDetailed = __mod_importer.parseImportDetailed
     exports.parseImportText = __mod_wordbook.parseImportText
     exports.pickUpgradeTarget = __mod_card.pickUpgradeTarget
     exports.posLabel = __mod_dict.posLabel
+    exports.queueForDirection = __mod_review.queueForDirection
     exports.rangeRects = __mod_selection.rangeRects
     exports.readMaxHanRatioRaw = __mod_settings.readMaxHanRatioRaw
     exports.readPacks = __mod_settings.readPacks
     exports.readSelection = __mod_selection.readSelection
     exports.readTranslator = __mod_settings.readTranslator
     exports.rectsOf = __mod_selection.rectsOf
+    exports.resolveRoots = __mod_marker.resolveRoots
+    exports.roundSummary = __mod_review.roundSummary
     exports.sameWord = __mod_anchor.sameWord
     exports.saveUx = __mod_config.saveUx
+    exports.scanTextNodes = __mod_marker.scanTextNodes
+    exports.shouldHandleKey = __mod_review.shouldHandleKey
+    exports.speakWord = __mod_review.speakWord
     exports.splitExample = __mod_card.splitExample
+    exports.stateAfterGrade = __mod_srs.stateAfterGrade
     exports.stemCandidates = __mod_word.stemCandidates
     exports.stemVariants = __mod_family.stemVariants
+    exports.styleOfMark = __mod_marker.styleOfMark
+    exports.summarizeImport = __mod_importer.summarizeImport
+    exports.supportsHighlight = __mod_marker.supportsHighlight
     exports.sx = __mod_ui.sx
+    exports.syncedAtLabel = __mod_settings.syncedAtLabel
     exports.tagLabel = __mod_config.tagLabel
+    exports.textOfNode = __mod_marker.textOfNode
     exports.translatorChain = __mod_settings.translatorChain
     exports.unionOf = __mod_selection.unionOf
     exports.unionRect = __mod_position.unionRect
+    exports.unionRectsOf = __mod_marker.unionRectsOf
+    exports.viewportOf = __mod_marker.viewportOf
     exports.wordAt = __mod_word.wordAt
     exports.writePacks = __mod_settings.writePacks
     exports.writeTranslator = __mod_settings.writeTranslator
+    exports.youdaoMode = __mod_settings.youdaoMode
+    exports.youdaoSyncResult = __mod_settings.youdaoSyncResult
 
     return module.exports
   },
