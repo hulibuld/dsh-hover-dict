@@ -1175,7 +1175,7 @@ export function bookTab(ctx) {
 /** 四态占比横条。纯 CSS，不引图表库。 */
 function StatusBar(props) {
   const { h, P, byState, total } = props
-  const { C } = P
+  const { C, FS } = P
   const colors = {
     new: `color-mix(in srgb, ${C.textFaint} 55%, transparent)`,
     unknown: C.danger,

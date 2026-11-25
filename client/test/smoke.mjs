@@ -1305,5 +1305,72 @@ t('markKnown 开时预览出现 color-mix 淡色',
 const offTree9 = renderAppearance({ markWords: false, markColor: 'theme-error', markKnown: false })
 t('着色关闭时预览只剩文字说明', previewSpans(offTree9).length === 0)
 
+console.log('\n[10] 设置页空白回归：StatusBar 必须拿到 FS')
+
+// 背景：StatusBar 只从 P 解构了 C，却裸用 FS.small，渲染时抛
+// `ReferenceError: FS is not defined`。真实 React 18 没有 error boundary，
+// 子组件一抛就把整棵设置页树卸载 —— 用户看到的是后台一片空白。
+//
+// [4] 那套假 React 会把组件异常吞成 null（makeReact 里的 try/catch），
+// 于是这个 bug 在旧断言里只表现为「少了个节点」，从来报不出来。
+// 这里用**记录错误**的 createElement 还原真实行为：抛错的位置产出 __error 节点。
+function runFactoryCapturing() {
+  const { react, resetHooks: reset } = makeReact()
+  const captured = []
+  // 必须在 factory 之前替换：产物前导里 `var h = React.createElement` 是取值时绑定的，
+  // 事后再改 react.createElement 影响不到模块内部闭包里的 h。
+  react.createElement = (type, props, ...children) => {
+    if (typeof type !== 'function') return { type, props, children: children.flat() }
+    try {
+      return type({ ...(props ?? {}), children: children.flat() })
+    } catch (error) {
+      const message = String(error?.message ?? error)
+      captured.push(message)
+      return { type: 'error', props: { __error: message }, children: [] }
+    }
+  }
+  let api10 = null
+  const runner = new Function('window', 'document', 'requestIdleCallback', 'cancelIdleCallback', 'setTimeout', 'clearTimeout', 'console', OUTPUT)
+  runner(
+    { __ModuleLoader__: { load: ({ factory }) => { api10 = factory(() => react) } }, innerWidth: 1200, innerHeight: 800, addEventListener: () => {}, removeEventListener: () => {}, localStorage: undefined },
+    makeDocument(),
+    (fn) => { fn(); return 1 },
+    () => {},
+    () => 1,
+    () => {},
+    { warn: () => {}, error: () => {}, log: () => {} },
+  )
+  return { api: api10, h: react.createElement, captured, resetHooks: reset }
+}
+
+const strict10 = runFactoryCapturing()
+const renderPanel10 = () => {
+  try {
+    strict10.resetHooks()
+    return strict10.api.SettingsPanel({ close: () => {} })
+  } catch { return null }
+}
+const panel10 = renderPanel10()
+const json10 = JSON.stringify(panel10, (k, v) => (k === 'node' ? '[obj]' : v))
+const errNodes10 = walk9(panel10, (n) => n.props?.__error !== undefined)
+
+t('默认「生词本」页签渲染不抛', panel10 !== null)
+t('渲染树里没有 __error 节点', errNodes10.length === 0,
+  errNodes10.slice(0, 3).map((n) => n.props.__error).join(' | ') || '0 个')
+t('渲染过程没有 FS is not defined',
+  !strict10.captured.some((m) => m.includes('FS is not defined')) && !json10.includes('FS is not defined'),
+  strict10.captured.join(' | ') || '无报错')
+t('StatusBar 正常产出占比条 hds-bar', json10.includes('hds-bar'))
+
+// 换一个**全新**的 factory 实例再验一遍，确保结论不依赖上面那个记录错误的 h。
+// （不能复用 [1]~[9] 的 api：假 React 的 hooks 是同一个数组，直调 appearanceTab
+//   留下的旧槽位会让 SettingsPanel 的 tab 初始值失真，渲染成别的页签。）
+const fresh10 = runFactory()
+const panel10b = (() => {
+  try { fresh10.resetHooks(); return fresh10.api.SettingsPanel({ close: () => {} }) } catch { return null }
+})()
+t('全新实例渲染同样含 hds-bar',
+  JSON.stringify(panel10b, (k, v) => (k === 'node' ? '[obj]' : v)).includes('hds-bar'))
+
 console.log(`\n================ ${pass}/${pass + fail} 通过 ================`)
 if (fail > 0) process.exit(1)
