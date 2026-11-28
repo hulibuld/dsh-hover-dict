@@ -65,6 +65,15 @@ export const C = Object.freeze({
   border1: 'var(--dsw-alias-border-l1, rgba(255,255,255,0.12))',
   border2: 'var(--dsw-alias-border-l2, rgba(255,255,255,0.20))',
   accent: 'var(--dsw-alias-brand-primary, #4d6bfe)',
+  // 「反色块」底色/字色：主按钮、开关轨道、复选框这类实心块用它。
+  //
+  // 为什么不用 accent 当底色：宿主深色主题的 brand-primary 是 **近白**（#f9fafb），
+  // 配写死的 #fff 就是白底白字（实测 contrast 1.05），配 label-primary 也一样。
+  // 反过来用 label-primary 当**底**、bg-base 当**字**，两套主题都自动是反色：
+  //   亮色 #0f1115 底 + #fff 字 → 18.90；深色 #f9fafb 底 + #151517 字 → 17.45。
+  // 两个都是宿主语义 token，不新增写死色值。
+  invert: 'var(--dsw-alias-label-primary, #0f1115)',
+  onAccent: 'var(--dsw-alias-bg-base, #fff)',
   danger: 'var(--dsw-alias-state-error-primary, #e5484d)',
   success: 'var(--dsw-alias-state-success-primary, #2f9e44)',
   warn: 'var(--dsw-alias-state-warn-primary, #f0a441)',
@@ -184,7 +193,7 @@ export function hintStyle() {
 
   const paint = {
     default: { background: C.bg1, color: C.text, border: C.border2 },
-    primary: { background: C.accent, color: '#fff', border: 'transparent' },
+    primary: { background: C.invert, color: C.onAccent, border: 'transparent' },
     ghost: { background: 'transparent', color: C.textDim, border: 'transparent' },
     danger: { background: 'transparent', color: C.danger, border: `color-mix(in srgb, ${C.danger} 55%, transparent)` },
   }[variant]
@@ -265,7 +274,7 @@ export function hintStyle() {
         flex: 'none',
         borderRadius: RADIUS.pill,
         border: `1px solid ${on ? 'transparent' : C.border2}`,
-        background: on ? C.accent : C.bg1,
+        background: on ? C.invert : C.bg1,
         boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.18)',
         transition: `background .22s ${EASE.out}, border-color .22s ${EASE.out}`,
       },
@@ -277,7 +286,7 @@ export function hintStyle() {
         width: 15,
         height: 15,
         borderRadius: '50%',
-        background: on ? '#fff' : C.textFaint,
+        background: on ? C.onAccent : C.textFaint,
         boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
         transform: on ? 'translateX(17px)' : 'translateX(0)',
         transition: `transform .28s ${EASE.settle}, background .2s ${EASE.out}`,
@@ -725,9 +734,9 @@ export function hintStyle() {
       padding: 0,
       borderRadius: 5,
       border: `1px solid ${on ? 'transparent' : C.border2}`,
-      background: on ? C.accent : C.bgBase,
+      background: on ? C.invert : C.bgBase,
       boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.14)',
-      color: '#fff',
+      color: C.onAccent,
       fontSize: 11,
       lineHeight: 1,
       cursor: 'pointer',

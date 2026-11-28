@@ -21,11 +21,13 @@
  */
 
 
+import { randomUUID } from 'node:crypto'
 import {
-  chmodSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync,
+  chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync,
 } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { gzipSync } from 'node:zlib'
 import z from '@deepseek-ai/schemastery'
 
@@ -169,7 +171,17 @@ export function apply(ctx, config) {
     if (typeof ctx?.get === 'function') {
       try { llm = ctx.get('llm') } catch { llm = undefined }
     }
-    const handler = createHandler({ assets, llm, dataDir, config: { ...resolved, enabled }, logger: SILENT_LOGGER })
+    // 登录会话管理器在装配阶段就建好，这样插件卸载时能把还开着的浏览器窗口一起关掉。
+    // 建它不碰 IO：真浏览器要到 start 才起。
+    const youdaoLogin = createYoudaoLoginManager({ logger: SILENT_LOGGER })
+    const handler = createHandler({
+      assets,
+      llm,
+      dataDir,
+      config: { ...resolved, enabled },
+      logger: SILENT_LOGGER,
+      youdaoLogin,
+    })
 
     // 注册即 effect：插件卸载时 disposer 撤掉路由，不泄漏。
     const dispose = ctx.webServer.register({
@@ -178,7 +190,11 @@ export function apply(ctx, config) {
       handler,
     })
     if (typeof ctx.effect === 'function') {
-      ctx.effect(() => dispose, 'dsh-hover-dict: /api/dsh-hover-dict 路由')
+      ctx.effect(() => () => {
+        try { dispose() } catch { /* ignore */ }
+        // 别把用户的有道登录窗口留在屏幕上
+        void youdaoLogin.disposeAll().catch(() => {})
+      }, 'dsh-hover-dict: /api/dsh-hover-dict 路由与登录会话')
     }
   } catch (error) {
     // apply 抛错会让整条插件在宿主里静默消失，非常难查。这里降级成一句警告。
@@ -305,6 +321,15 @@ export function createHandler(options) {
     : YOUDAO_PAGE_GAP_MS
 
   /**
+   * 有道「浏览器登录」会话表：一次性、10 分钟过期、只活在内存里。
+   * 测试可以注入 `youdaoLogin` 换成假实现，完全不依赖 puppeteer 与 GUI。
+   */
+  const youdaoLogin = options.youdaoLogin ?? createYoudaoLoginManager({
+    logger,
+    ...(options.youdaoLoginBrowser !== undefined ? { browser: options.youdaoLoginBrowser } : {}),
+  })
+
+  /**
    * gzip 结果按 ETag 缓存。词库 3 MB 压一次约 40 ms，
    * 每个请求重压是不可接受的，但缓存整份压缩结果只有 1.4 MB。
    * @type {Map<string, Buffer>}
@@ -327,6 +352,8 @@ export function createHandler(options) {
         translate: ['POST'],
         'youdao/cookie': ['POST', 'DELETE'],
         'youdao/sync': ['POST'],
+        'youdao/login/start': ['POST'],
+        'youdao/login/cancel': ['POST'],
       }
       const allowed = WRITE_ROUTES[rawTail0]
 
@@ -374,6 +401,16 @@ export function createHandler(options) {
       }
       if (tail === 'youdao/sync') {
         return handleYoudaoSync(req, res, method, youdaoStore, youdaoFetch, youdaoGapMs, logger)
+      }
+      // ── 有道浏览器登录会话（点登录 → 开可见窗口 → 自动取 Cookie）──
+      if (tail === 'youdao/login/start') {
+        return handleYoudaoLoginStart(res, method, youdaoLogin)
+      }
+      if (tail === 'youdao/login/poll') {
+        return handleYoudaoLoginPoll(res, method, url, youdaoLogin, youdaoStore, youdaoFetch)
+      }
+      if (tail === 'youdao/login/cancel') {
+        return handleYoudaoLoginCancel(req, res, method, youdaoLogin)
       }
 
       if (tail === 'health') {
@@ -1007,6 +1044,529 @@ function youdaoError(code, message, extra) {
   error.code = code
   if (extra !== undefined) error.extra = extra
   return error
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 有道浏览器登录会话（点「登录有道」→ 宿主起可见窗口 → 自动取 Cookie）
+//
+// 为什么由宿主起浏览器而不是打开用户浏览器：Cookie 必须由宿主读得到。
+// 用户自己浏览器里的 Cookie 跨进程、跨域，宿主拿不到；而 puppeteer 的
+// page.cookies() 能直接读。窗口是可见的（headless:false），用户在窗口里
+// 正常登录，宿主轮询 URL 与 Cookie 数量判断完成。
+//
+// 纪律：独立 --user-data-dir（/tmp 下 mkdtemp），用完即关即删，
+// 绝不碰用户主 Chrome profile，也不搬运用户 profile 里的 Cookie。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 真实登录入口。
+ *
+ * 2026-11 施工时无凭据探测结论：
+ *   - 旧端点 `https://dict.youdao.com/login/acc/login` 已死，会跳到
+ *     weibo2cidian-fail.html，不能用；
+ *   - dict.youdao.com 首页点 `a.login` 触发的是一个 iframe 登录框，
+ *     iframe 链是 c.youdao.com/common-login-web → passport.youdao.com；
+ *   - 直接打开下面这个 URL（带 redirect_url）能渲染出登录框，登录成功后
+ *     按 redirect_url 跳回 dict.youdao.com —— 这就是「登录完成」的信号。
+ */
+const YOUDAO_LOGIN_URL = 'https://c.youdao.com/common-login-web/index.html'
+  + '?redirect_url=' + encodeURIComponent('https://dict.youdao.com/')
+
+/** 登录会话存活上限。过期就关窗口删 profile，别留一个还能用的浏览器。 */
+const YOUDAO_LOGIN_TTL_MS = 10 * 60 * 1000
+
+/**
+ * 兜底验证的启动时间。
+ *
+ * 正常路径是「登录成功 → 按 redirect_url 跳回 dict.youdao.com」，URL 一跳就 ready。
+ * 但如果登录是在 iframe / 新标签里完成、外层 URL 一直停在 c.youdao.com，
+ * 只靠 URL 就把用户卡死在 pending。所以超过这个时长后，允许拿当前 Cookie
+ * 直接打 accountinfo —— 那才是「登没登录」的权威判据，不会误判。
+ */
+const YOUDAO_LOGIN_FALLBACK_AFTER_MS = 60 * 1000
+
+/** 兜底验证的最小间隔，别每 2 秒 poll 都打一次有道。 */
+const YOUDAO_LOGIN_FALLBACK_GAP_MS = 15 * 1000
+
+/** 跳回 dict 域就算「离开登录页」了。 */
+const YOUDAO_LOGIN_DONE_HOST = 'dict.youdao.com'
+
+/**
+ * 匿名基线页：先访它一次，把匿名态 Cookie 种进来。
+ *
+ * 全新 profile 上直接打登录页，dict 域一个 Cookie 都没有（实测），
+ * 「Cookie 比基线多」这条判据就成了永远成立/永不成立的废判据。
+ */
+const YOUDAO_LOGIN_ANON_URL = 'https://dict.youdao.com/'
+
+/** Cookie 只从有道域取，别把无关域名的 Cookie 拼进请求头。 */
+const YOUDAO_COOKIE_DOMAIN_RE = /(^|\.)(youdao|163)\.com$/i
+
+/** 候选 Chrome 可执行文件：macOS / Linux / Windows 常见的几处。 */
+function chromeCandidates() {
+  const fromEnv = typeof process.env.DSH_CHROME_PATH === 'string' && process.env.DSH_CHROME_PATH.trim() !== ''
+    ? [process.env.DSH_CHROME_PATH.trim()]
+    : []
+  if (process.platform === 'darwin') {
+    return [
+      ...fromEnv,
+      '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+      '/Applications/Chromium.app/Contents/MacOS/Chromium',
+      '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+      '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+    ]
+  }
+  if (process.platform === 'win32') {
+    const base = process.env.LOCALAPPDATA ?? 'C:\\Users\\Public'
+    return [
+      ...fromEnv,
+      join(base, 'Google/Chrome/Application/chrome.exe'),
+      join(process.env.PROGRAMFILES ?? 'C:\\Program Files', 'Google/Chrome/Application/chrome.exe'),
+      join(process.env['PROGRAMFILES(X86)'] ?? 'C:\\Program Files (x86)', 'Microsoft/Edge/Application/msedge.exe'),
+    ]
+  }
+  return [
+    ...fromEnv,
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/snap/bin/chromium',
+  ]
+}
+
+/** puppeteer-core 的候选位置：宿主 profile 里那份优先（本机已实测可用）。 */
+function puppeteerCoreCandidates() {
+  const fromEnv = typeof process.env.DSH_PUPPETEER_CORE === 'string' && process.env.DSH_PUPPETEER_CORE.trim() !== ''
+    ? [process.env.DSH_PUPPETEER_CORE.trim()]
+    : []
+  return [
+    ...fromEnv,
+    join(homedir(), '.dsh/profiles/desktop/node_modules/puppeteer-core'),
+    'puppeteer-core',
+  ]
+}
+
+/**
+ * 把一个 puppeteer-core 候选解析成能 import 的入口。
+ *
+ * 不能直接 `import(pathToFileURL(dir))` —— 那是目录 URL，ESM 不做目录解析，
+ * 只会报「没有 puppeteer-core」。要读 package.json 的 exports/main 拿真正的文件。
+ *
+ * @returns {string | null} 入口的 import specifier；解析不出来返回 null
+ */
+function resolvePuppeteerEntry(candidate) {
+  if (!isAbsolute(candidate)) return candidate // 交给 Node 的裸模块解析（装了依赖的环境）
+  let pkg
+  try {
+    pkg = JSON.parse(readFileSync(join(candidate, 'package.json'), 'utf8'))
+  } catch {
+    return null
+  }
+  const exported = pkg?.exports?.['.']
+  const entry = (typeof exported === 'string' ? exported : exported?.import ?? exported?.require)
+    ?? pkg?.main
+    ?? 'index.js'
+  const path = join(candidate, entry)
+  return existsSync(path) ? pathToFileURL(path).href : null
+}
+
+/**
+ * 起一个真的可见 Chrome，打开有道登录页。
+ *
+ * 返回一个最小契约，测试可以完全照这个形状造假的：
+ *   { profileDir, pageUrl(), readCookies(), close() }
+ *
+ * @returns {Promise<{ profileDir: string, pageUrl: () => string, readCookies: () => Promise<Array<{name:string,value:string,domain:string}>>, close: () => Promise<void> }>}
+ */
+export async function launchYoudaoLoginBrowser(options = {}) {
+  const loginUrl = options.loginUrl ?? YOUDAO_LOGIN_URL
+  const executablePath = options.executablePath
+    ?? chromeCandidates().find((path) => existsSync(path))
+  if (typeof executablePath !== 'string' || executablePath === '' || !existsSync(executablePath)) {
+    throw youdaoError('E_NO_BROWSER',
+      '找不到 Chrome（或 Edge/Chromium），自动登录不可用。请改装 Chrome，或用手动粘贴 Cookie')
+  }
+
+  let puppeteer
+  for (const candidate of puppeteerCoreCandidates()) {
+    try {
+      const spec = resolvePuppeteerEntry(candidate)
+      if (spec === null) continue
+      puppeteer = await import(spec)
+      if (typeof puppeteer?.launch === 'function') break
+      puppeteer = null
+    } catch { /* 试下一个 */ }
+  }
+  if (!puppeteer || typeof puppeteer.launch !== 'function') {
+    throw youdaoError('E_NO_BROWSER',
+      '宿主环境里没有 puppeteer-core，自动登录不可用。请用手动粘贴 Cookie')
+  }
+
+  // 独立 profile：绝不碰用户主 Chrome 的数据目录
+  const profileDir = mkdtempSync(join(tmpdir(), 'dsh-hover-dict-login-'))
+  let browser
+  try {
+    browser = await puppeteer.launch({
+      executablePath,
+      headless: false,
+      userDataDir: profileDir,
+      defaultViewport: null,
+      args: ['--no-first-run', '--no-default-browser-check'],
+    })
+  } catch (error) {
+    rmSync(profileDir, { recursive: true, force: true })
+    throw youdaoError('E_NO_BROWSER',
+      `起浏览器失败：${error?.message ?? error}。请用手动粘贴 Cookie`)
+  }
+
+  let page
+  try {
+    // 复用启动时那个 about:blank 标签，别在用户屏幕上多留一个空白页
+    const existing = await browser.pages()
+    page = Array.isArray(existing) && existing.length > 0 ? existing[0] : await browser.newPage()
+    // 先访一次 dict 首页：全新 profile 上直接打登录页的话，dict 域一个 Cookie
+    // 都没有（实测），前端「等待中」只能显示 0 个 Cookie，看不出进展。
+    try {
+      await page.goto(YOUDAO_LOGIN_ANON_URL, { waitUntil: 'domcontentloaded', timeout: 20000 })
+    } catch { /* 拿不到就当 0，判据由 URL + accountinfo 兜底 */ }
+    await page.goto(loginUrl, { waitUntil: 'domcontentloaded', timeout: 30000 })
+  } catch (error) {
+    try { await browser.close() } catch { /* ignore */ }
+    rmSync(profileDir, { recursive: true, force: true })
+    throw youdaoError('E_NO_BROWSER',
+      `打开有道登录页失败：${error?.message ?? error}。请用手动粘贴 Cookie`)
+  }
+
+  let closed = false
+
+  /**
+   * 一个常驻的 CDP 会话，用来读**全部** Cookie。
+   *
+   * 为什么不只用 page.cookies()：它按当前页面 URL 过滤。登录页在 c.youdao.com
+   * 上时 `page.cookies()` 只回 1 个（实测），登录态 Cookie 却种在 dict.youdao.com /
+   * .youdao.com 上，会整个漏掉。`Network.getAllCookies` 不受当前页限制（实测 6 个全拿到），
+   * 所以优先走它；拿不到再退回 context.cookies() / page.cookies()。
+   */
+  let cdp = null
+  async function cookieSource() {
+    if (cdp === null) {
+      try { cdp = await page.createCDPSession() } catch { cdp = false }
+    }
+    return cdp
+  }
+
+  async function readCookies() {
+    let list = []
+    const client = await cookieSource()
+    if (client) {
+      try {
+        const result = await client.send('Network.getAllCookies')
+        list = Array.isArray(result?.cookies) ? result.cookies : []
+      } catch { list = [] }
+    }
+    if (list.length === 0) {
+      try {
+        const context = typeof browser.defaultBrowserContext === 'function'
+          ? browser.defaultBrowserContext()
+          : null
+        list = context && typeof context.cookies === 'function'
+          ? await context.cookies()
+          : await page.cookies()
+      } catch {
+        try { list = await page.cookies() } catch { list = [] }
+      }
+    }
+    return (Array.isArray(list) ? list : [])
+      .filter((item) => YOUDAO_COOKIE_DOMAIN_RE.test(String(item?.domain ?? '').replace(/^\./, '')))
+      .map((item) => ({ name: String(item.name), value: String(item.value), domain: String(item.domain) }))
+  }
+
+  return {
+    profileDir,
+    pageUrl: () => String(page?.url?.() ?? ''),
+    /**
+     * 所有页面的 URL。
+     *
+     * 登录可能在 iframe 里完成、也可能弹出新标签，所以判据不能只看一开始那一页：
+     * 只要**任意**一页已经在 dict.youdao.com，就说明登录走完了。
+     */
+    async pageUrls() {
+      const urls = []
+      try {
+        const pages = await browser.pages()
+        for (const item of Array.isArray(pages) ? pages : []) {
+          try { urls.push(String(item.url())) } catch { /* 页可能已关 */ }
+        }
+      } catch { /* 拿不到就用下面那一页 */ }
+      if (urls.length === 0) urls.push(String(page?.url?.() ?? ''))
+      return urls
+    },
+    readCookies,
+    close: async () => {
+      if (closed) return
+      closed = true
+      if (cdp) { try { await cdp.detach() } catch { /* ignore */ } cdp = null }
+      try { await browser.close() } catch { /* 用户可能自己关了窗口 */ }
+      rmSync(profileDir, { recursive: true, force: true })
+    },
+  }
+}
+
+/** 把 cookies 拼成请求头里那一行。 */
+export function cookiesToHeader(cookies) {
+  return (Array.isArray(cookies) ? cookies : [])
+    .filter((item) => typeof item?.name === 'string' && item.name !== '')
+    .map((item) => `${item.name}=${item.value}`)
+    .join('; ')
+}
+
+/**
+ * 登录会话管理器。会话一次性、10 分钟过期、只活在内存里。
+ *
+ * @param {object} [options]
+ * @param {{ launch?: Function }} [options.browser] 浏览器工厂（测试注入假实现）
+ * @param {() => number} [options.now] 时钟（测试用来跳过 10 分钟）
+ * @param {{ warn?: Function, info?: Function }} [options.logger]
+ */
+export function createYoudaoLoginManager(options = {}) {
+  const logger = options.logger ?? SILENT_LOGGER
+  const now = typeof options.now === 'function' ? options.now : () => Date.now()
+  const launch = typeof options.browser?.launch === 'function'
+    ? options.browser.launch
+    : launchYoudaoLoginBrowser
+
+  /** @type {Map<string, { id: string, createdAt: number, status: string, session: any, baseline: number }>} */
+  const sessions = new Map()
+
+  /** 关窗口删 profile。失败也吞掉——会话已经没用了，别因此报错。 */
+  async function release(record) {
+    const session = record.session
+    record.session = null
+    if (session && typeof session.close === 'function') {
+      try { await session.close() } catch (error) {
+        logger.warn?.(`[dsh-hover-dict] 关闭登录窗口失败：${error?.message ?? error}`)
+      }
+    }
+  }
+
+  /** 清掉过期的，顺手把取消态的老记录也带走。 */
+  async function sweep() {
+    const stamp = now()
+    for (const [id, record] of sessions) {
+      if (record.status === 'pending' && stamp - record.createdAt > YOUDAO_LOGIN_TTL_MS) {
+        await release(record)
+        record.status = 'expired'
+      }
+      // 取消/过期/成功的记录留 5 分钟供前端最后一次 poll 读到，之后丢
+      if (record.status !== 'pending' && stamp - record.createdAt > YOUDAO_LOGIN_TTL_MS + 5 * 60 * 1000) {
+        sessions.delete(id)
+      }
+    }
+  }
+
+  return {
+    async start() {
+      await sweep()
+      const session = await launch({ loginUrl: YOUDAO_LOGIN_URL })
+      // 匿名基线：只用于诊断（pending 会带回来给前端看进展），不当登录判据
+      let baseline = 0
+      try { baseline = (await session.readCookies()).length } catch { baseline = 0 }
+      const id = randomUUID()
+      sessions.set(id, { id, createdAt: now(), status: 'pending', session, baseline })
+      return { sessionId: id, loginUrl: YOUDAO_LOGIN_URL }
+    },
+
+    /**
+     * 看一次状态。ready 时把 Cookie 串交出去，由路由去验证/落盘，
+     * 通过后再调 finish 关窗口。
+     */
+    async poll(id) {
+      await sweep()
+      const record = sessions.get(id)
+      if (!record) return { status: 'not-found' }
+      if (record.status === 'cancelled') return { status: 'cancelled' }
+      if (record.status === 'expired') return { status: 'expired' }
+      if (record.status === 'success') return { status: 'success' }
+
+      const session = record.session
+      if (!session) return { status: 'expired' }
+
+      let cookies = []
+      try { cookies = await session.readCookies() } catch { cookies = [] }
+      const cookie = cookiesToHeader(cookies)
+      const cookieCount = cookies.length
+      const age = now() - record.createdAt
+
+      // 判据 1（主路径）：URL 已按 redirect_url 跳回 dict.youdao.com。
+      // 登录在 iframe / passport 里的中间阶段就算冒出 Cookie 也还不是登录态，
+      // 所以这条不能用「Cookie 变多」代替 —— 实测匿名 Cookie 数在 5~6 之间
+      // 抖动（埋点 Cookie 会自己过期重建），拿数量当门槛必然误判。
+      const urls = typeof session.pageUrls === 'function'
+        ? await session.pageUrls()
+        : [String(session.pageUrl?.() ?? '')]
+      const leftLoginPage = urls.some((raw) => {
+        try { return new URL(String(raw)).hostname === YOUDAO_LOGIN_DONE_HOST } catch { return false }
+      })
+      if (leftLoginPage) {
+        if (cookie === '') return { status: 'pending', cookieCount: 0, baseline: record.baseline }
+        return { status: 'ready', cookie, cookieCount, reason: 'redirected' }
+      }
+
+      // 判据 2（兜底）：登录若在 iframe / 新标签里完成、外层 URL 一直不跳，
+      // 过 60 秒就拿当前 Cookie 去验证 —— 真的登录了才 ready，不会误判。
+      // 每 15 秒最多试一次，别每 2 秒 poll 都打有道。
+      if (cookie !== ''
+        && age >= YOUDAO_LOGIN_FALLBACK_AFTER_MS
+        && (record.lastFallbackAt === undefined
+          || now() - record.lastFallbackAt >= YOUDAO_LOGIN_FALLBACK_GAP_MS)) {
+        record.lastFallbackAt = now()
+        return { status: 'ready', cookie, cookieCount, reason: 'fallback' }
+      }
+
+      return { status: 'pending', cookieCount, baseline: record.baseline, ageMs: age }
+    },
+
+    /** 验证成功后收尾：关窗口删 profile，会话标 success（poll 再问也只报 success）。 */
+    async finish(id) {
+      const record = sessions.get(id)
+      if (!record) return
+      record.status = 'success'
+      await release(record)
+    },
+
+    async cancel(id) {
+      const record = sessions.get(id)
+      if (!record) return false
+      record.status = 'cancelled'
+      await release(record)
+      return true
+    },
+
+    /** 插件卸载/进程退出时把所有还开着的窗口关掉。 */
+    async disposeAll() {
+      for (const record of sessions.values()) await release(record)
+      sessions.clear()
+    },
+
+    /** 诊断用：当前活跃会话数（测试断言「cancel 后不残留」）。 */
+    size() {
+      let live = 0
+      for (const record of sessions.values()) if (record.status === 'pending') live += 1
+      return live
+    },
+  }
+}
+
+/**
+ * POST /youdao/login/start —— 生成会话并起可见浏览器。
+ * 拿不到浏览器就报 E_NO_BROWSER，前端据此降级到手动粘贴。
+ */
+async function handleYoudaoLoginStart(res, method, manager) {
+  if (method !== 'POST') {
+    return sendError(res, 405, 'E_METHOD', '该接口只接受 POST', false)
+  }
+  try {
+    const started = await manager.start()
+    return sendJson(res, 200, {
+      ok: true,
+      sessionId: started.sessionId,
+      loginUrl: started.loginUrl,
+      ttlMs: YOUDAO_LOGIN_TTL_MS,
+    }, false)
+  } catch (error) {
+    const code = typeof error?.code === 'string' ? error.code : 'E_NO_BROWSER'
+    return sendError(res, 503, code,
+      error?.message ?? '起不了浏览器，自动登录不可用，请用手动粘贴 Cookie', false)
+  }
+}
+
+/**
+ * GET /youdao/login/poll?session=ID —— 轮一次状态。
+ *
+ * 判据（探测结论）：URL 已跳回 dict.youdao.com + Cookie 数量比匿名多。
+ * 满足后提取 Cookie → accountinfo 验证 → valid 才落盘 → 关窗口删 profile。
+ */
+async function handleYoudaoLoginPoll(res, method, url, manager, store, fetchImpl) {
+  if (method !== 'GET' && method !== 'HEAD') {
+    return sendError(res, 405, 'E_METHOD', '该接口只接受 GET', false)
+  }
+  const id = String(url?.searchParams?.get('session') ?? '').trim()
+  if (id === '') {
+    return sendError(res, 400, 'E_LOGIN_NOT_FOUND', '没有会话 id', method === 'HEAD')
+  }
+
+  let state
+  try {
+    state = await manager.poll(id)
+  } catch (error) {
+    return sendError(res, 502, 'E_LOGIN_FAILED', error?.message ?? '读取登录窗口状态失败', false)
+  }
+
+  const status = state?.status ?? 'not-found'
+
+  if (status === 'not-found') {
+    return sendError(res, 404, 'E_LOGIN_NOT_FOUND', '会话不存在或已清理，请重新点「登录有道」', method === 'HEAD')
+  }
+  if (status === 'expired') {
+    return sendError(res, 410, 'E_LOGIN_TIMEOUT',
+      '登录超时了（10 分钟），窗口已关闭，请重新点「登录有道」', method === 'HEAD')
+  }
+  if (status === 'cancelled') {
+    return sendError(res, 409, 'E_LOGIN_CANCELLED', '已取消登录', method === 'HEAD')
+  }
+  if (status === 'success') {
+    return sendJson(res, 200, { ok: true, status: 'success' }, method === 'HEAD')
+  }
+  if (status !== 'ready') {
+    return sendJson(res, 200, {
+      ok: true,
+      status: 'pending',
+      cookieCount: Number.isFinite(state?.cookieCount) ? state.cookieCount : 0,
+      ...(Number.isFinite(state?.ageMs) ? { ageMs: state.ageMs } : {}),
+    }, method === 'HEAD')
+  }
+
+  // 拿到 Cookie 串：先验证，valid 才落盘；不 valid 继续 pending（用户可能还在跳转）
+  let verdict
+  try {
+    verdict = await verifyYoudaoCookie(fetchImpl, state.cookie)
+  } catch (error) {
+    return sendJson(res, 200, {
+      ok: true,
+      status: 'pending',
+      reason: typeof error?.code === 'string' ? error.code : 'network',
+    }, method === 'HEAD')
+  }
+  if (!verdict.valid) {
+    return sendJson(res, 200, { ok: true, status: 'pending', reason: verdict.reason }, method === 'HEAD')
+  }
+
+  const saved = store.save(state.cookie, verdict.nickname)
+  await manager.finish(id)
+  return sendJson(res, 200, {
+    ok: true,
+    status: 'success',
+    valid: true,
+    ...(saved.nickname !== '' ? { nickname: saved.nickname } : {}),
+  }, method === 'HEAD')
+}
+
+/** POST /youdao/login/cancel —— 关窗口、删 profile、清会话。 */
+async function handleYoudaoLoginCancel(req, res, method, manager) {
+  if (method !== 'POST') {
+    return sendError(res, 405, 'E_METHOD', '该接口只接受 POST', false)
+  }
+  const body = await readJsonBody(req)
+  const id = typeof body?.sessionId === 'string' ? body.sessionId.trim() : ''
+  if (id === '') {
+    return sendError(res, 400, 'E_LOGIN_NOT_FOUND', '没有会话 id', false)
+  }
+  const cleaned = await manager.cancel(id)
+  if (!cleaned) {
+    return sendError(res, 404, 'E_LOGIN_NOT_FOUND', '会话不存在或已清理', false)
+  }
+  return sendJson(res, 200, { ok: true, status: 'cancelled' }, false)
 }
 
 /**

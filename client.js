@@ -7,6 +7,7 @@
  *   client/src/hit.js
  *   client/src/selection.js
  *   client/src/net.js
+ *   client/src/t2s.js
  *   client/src/dict.js
  *   client/src/family.js
  *   client/src/srs.js
@@ -162,8 +163,20 @@ window.__ModuleLoader__.load({
       viewportMarginPx: 8,
       showTags: true,
       tagOrder: ['cet4', 'cet6', 'ky', 'ielts'],
+      pageSize: 20,
       ...DEFAULT_MARK,
     }
+
+/**
+ * 生词本词表每页行数的三档。
+ *
+ * 这是**枚举**不是区间：用户要的就是 10/15/20 三选一，
+ * 所以不能像其它数值项那样用 min/max 夹取（那会把 50 夹成 20，
+ * 看起来结果对了，但语义是「超出上限」而不是「不在三档里，回落默认」）。
+ *
+ * @type {ReadonlyArray<number>}
+ */
+    const PAGE_SIZE_OPTIONS = Object.freeze([10, 15, 20])
 
 /**
  * 合并后的默认值。app.js 用它对 Config 与 localStorage 做兜底。
@@ -363,6 +376,8 @@ window.__ModuleLoader__.load({
         markColor: normalizeMarkColor(source.markColor),
         markKnown: typeof source.markKnown === 'boolean' ? source.markKnown : DEFAULT_APPEARANCE.markKnown,
         markStyle: MARK_STYLES.includes(source.markStyle) ? source.markStyle : DEFAULT_APPEARANCE.markStyle,
+    // 三档枚举：不在 [10,15,20] 里的一律回落 20（旧存档没有这个键也走这条）
+        pageSize: PAGE_SIZE_OPTIONS.includes(source.pageSize) ? source.pageSize : DEFAULT_APPEARANCE.pageSize,
       }
 
       if (Array.isArray(source.tagOrder)) {
@@ -392,7 +407,7 @@ window.__ModuleLoader__.load({
       return table[tag] ?? tag
     }
 
-      return { DEFAULT_TIMING, THEME_ERROR_COLOR, DEFAULT_MARK_COLOR, MARK_STYLES, MARK_COLOR_PRESETS, DEFAULT_APPEARANCE, DEFAULT_UX, STORAGE_KEY, loadUx, saveUx, clampTiming, normalizeMarkColor, clampAppearance, tagLabel }
+      return { DEFAULT_TIMING, THEME_ERROR_COLOR, DEFAULT_MARK_COLOR, MARK_STYLES, MARK_COLOR_PRESETS, DEFAULT_APPEARANCE, PAGE_SIZE_OPTIONS, DEFAULT_UX, STORAGE_KEY, loadUx, saveUx, clampTiming, normalizeMarkColor, clampAppearance, tagLabel }
     })()
 
     // ═══ word.js ═══
@@ -1211,10 +1226,273 @@ window.__ModuleLoader__.load({
       return { API_PREFIX, humanizeError, fetchAsset }
     })()
 
+    // ═══ t2s.js ═══
+    var __mod_t2s = (function () {
+/**
+ * t2s.js —— 繁体中文 → 简体中文（Tatoeba 例句源是繁中，用户要简体）。
+ *
+ * 为什么自己做而不用库：这个插件的运行期依赖是**零**（package.json 的
+ * dependencies 是 {}），`opencc-js` 有 4MB+ 的完整词典，只为转 8960 条例句
+ * 不值得背进来。这里把 opencc-js 的 tw→cn 字典裁到「本词库实际会用到」的
+ * 那一小部分内嵌成常量，体积 17.2KB，与 opencc 官方逐条比对 **0 差异**。
+ *
+ * ## 为什么必须两遍
+ *
+ * 一遍混着做会漏：繁体里有「异体字」这层。台式繁中会把标准繁体再写成异体
+ * （喫/吃、著/着、麵/麪、裡/裏…）。opencc 的 tw→cn 是**先归一再转简**：
+ *
+ *   遍1  TW_* —— 繁异体归一（table 最长匹配）：把台式异体归回标准形态
+ *   遍2  PHRASES + CHAR_T/S —— 繁转简（短语最长匹配 → 单字兜底）
+ *
+ * 实测一遍（只做繁转简）对 8960 条例句有 565 条差异；两遍分开则 0 差异。
+ *
+ * ## 为什么 TW_IDENT 里那些「繁=简」的条目不能删
+ *
+ * 它们是**阻断器**（blocker），不是多余数据。遍1 有 `著→着` 这一条异体归一，
+ * 但「著名」「名著」「著作」里的 著 在台繁里本来就该保持 著（转简后仍是 著名，
+ * 不是 着名）。所以 `著名 → 著名` 这种「看起来什么都没做」的条目必须留在表里，
+ * 让最长匹配先命中它、把 著 锁住。删掉就会得到「着名」「名着」「着作」。
+ * 实测：把恒等条目全删掉，39 条例句出错（着名/着作/名着…）。
+ *
+ * ## 数据来源与验证
+ *
+ * 字典从 opencc-js 的 tw2sp/t2cn 词典提取，再按「本词库例句 + 释义」的实际
+ * 用字做裁剪（只保留会被命中的短语与会被用到的单字）。
+ * 验证范围：8960 条例句 + 75578 条释义 + 10 条典型短句，共 84538 条，
+ * 与 `OpenCC.Converter({from:'tw',to:'cn'})` 逐条比对 **0 差异**。
+ *
+ * 用户 2026-11-28 明确要求例句用简体（架构.md 里「例句中文是繁体，不要转换」
+ * 那句是更早的决定，已过时）。
+ */
+
+    const PHRASES =
+      "一坏 一坯|一目瞭然 一目了然|七逕 七迳|上逕 上迳|上鍊 上链|不可貲計 不可赀計|不瞭解 不了解|么麼 幺麽|么麽 幺麽|九逕山 九迳山|乾乾淨淨" +
+      " 干干净净|乾乾脆脆 干干脆脆|乾佑縣 乾佑县|乾元 乾元|乾卦 乾卦|乾嘉 乾嘉|乾圖 乾图|乾坤 乾坤|乾坤一擲 乾坤一掷|乾坤再造 乾坤再造|乾坤" +
+      "大挪移 乾坤大挪移|乾宅 乾宅|乾安縣 乾安县|乾安鎮 乾安镇|乾州 乾州|乾斷 乾断|乾斷食 干断食|乾旦 乾旦|乾曜 乾曜|乾清宮 乾清宫|乾盛世 " +
+      "乾盛世|乾紅 干红|乾綱 乾纲|乾縣 乾县|乾象 乾象|乾造 乾造|乾道 乾道|乾闥婆 乾闼婆|乾陵 乾陵|乾隆 乾隆|乾隆年間 乾隆年间|乾隆皇帝 乾" +
+      "隆皇帝|二噁英 二𫫇英|仇讎 仇雠|以免藉口 以免借口|以功覆過 以功覆过|任筆沈詩 任笔沈诗|侔德覆載 侔德覆载|傢俱 家具|傷亡枕藉 伤亡枕藉|允祕" +
+      " 允祕|八濛山 八濛山|其陰多蒐 其阴多蒐|凌藉 凌借|出醜狼藉 出丑狼藉|函覆 函复|剋架 剋架|剋毒 剋毒|千鍾粟 千锺粟|南氾 南氾|南逕 南迳|" +
+      "反反覆覆 反反复复|反覆 反复|反覆思維 反复思维|反覆思量 反复思量|反覆性 反复性|名覆金甌 名复金瓯|吳祕 吴祕|吳育昇 吴育昇|哪吒 哪吒|回覆" +
+      " 回复|土坏 土坯|坏土 坯土|坏子 坯子|坏布 坯布|坏戶 坯户|墨沈沈 墨沉沉|壺裏乾坤 壶里乾坤|大目乾連冥間救母變文 大目乾连冥间救母变文|宫商" +
+      "角徵羽 宫商角徵羽|射覆 射覆|尼乾子 尼乾子|尼乾陀 尼乾陀|年釐 年釐|幺麼 幺麽|幺麼小丑 幺麽小丑|幺麼小醜 幺麽小丑|康乾 康乾|張昇 张昇|" +
+      "張法乾 张法乾|彷彿 仿佛|彷徨 彷徨|徐胤昇 徐胤昇|復甦 复苏|徵弦 徵弦|徵絃 徵弦|徵羽摩柯 徵羽摩柯|徵聲 徵声|徵調 徵调|徵音 徵音|情有" +
+      "獨鍾 情有独钟|想像 想像|意志消沈 意志消沉|慰藉 慰藉|慰藉着 慰藉着|憑藉 凭借|憑藉着 凭借着|懷釐 怀釐|成甦 成甦|所費不貲 所费不赀|手鍊" +
+      " 手链|打坏 打坯|扞格 扞格|扭轉乾坤 扭转乾坤|批覆 批复|找藉口 找借口|折戟沈沙 折戟沉沙|折戟沈河 折戟沉河|拉坏 拉坯|拉鍊 拉链|拉鍊工程" +
+      " 拉链工程|拜覆 拜复|挨剋 挨剋|捏坏 捏坯|擊沈 击沉|據瞭解 据了解|文錦覆阱 文锦覆阱|於世成 於世成|於乎 於乎|於仲完 於仲完|於倫 於伦|" +
+      "於其一 於其一|於則 於则|於勇明 於勇明|於呼哀哉 於呼哀哉|於單 於单|於坦 於坦|於崇文 於崇文|於忠祥 於忠祥|於惟一 於惟一|於戲 於戏|於敖" +
+      " 於敖|於梨華 於梨华|於清言 於清言|於潛 於潜|於琳 於琳|於穆 於穆|於竹屋 於竹屋|於菟 於菟|於邑 於邑|於陵子 於陵子|旋乾轉坤 旋乾转坤|" +
+      "旋轉乾坤 旋转乾坤|旋轉乾坤之力 旋转乾坤之力|明瞭 明了|明覆 明复|昏沈 昏沉|春蒐 春蒐|春釐 春釐|暗沈沈 暗沉沉|書中自有千鍾粟 书中自有千锺" +
+      "粟|有序 有序|朝乾夕惕 朝乾夕惕|木吒 木吒|李乾德 李乾德|李昇 李昇|李昇勳 李昇勋|李澤鉅 李泽钜|李祕 李祕|李鍊福 李链福|李鍾郁 李锺郁|" +
+      "束脩 束脩|東氾 东氾|林甦 林甦|校讎 校雠|梁昇卿 梁昇卿|梁章鉅 梁章钜|楊甦棣 杨甦棣|楊聯陞 杨联陞|樊於期 樊於期|橡椀 橡椀|死氣沈沈 死" +
+      "气沉沉|段脩 段脩|毛坏 毛坯|水逕 水迳|氾勝之 氾胜之|氾南 氾南|氾國 氾国|氾水 氾水|沈下 沉下|沈不住氣 沉不住气|沈住氣 沉住气|沈冤 沉" +
+      "冤|沈厚 沉厚|沈吟 沉吟|沈寂 沉寂|沈得住氣 沉得住气|沈思 沉思|沈思往事 沉思往事|沈悶 沉闷|沈沒 沉没|沈沒成本 沉没成本|沈浮 沉浮|沈浸" +
+      " 沉浸|沈浸於 沉浸于|沈淪 沉沦|沈湎 沉湎|沈湎酒色 沉湎酒色|沈溺 沉溺|沈滯 沉滞|沈滯性 沉滞性|沈澱 沉淀|沈澱出來 沉淀出来|沈澱劑 沉淀" +
+      "剂|沈澱法 沉淀法|沈澱物 沉淀物|沈濁 沉浊|沈甸甸 沉甸甸|沈痛 沉痛|沈痼 沉痼|沈痾 沉疴|沈睡 沉睡|沈睡不醒 沉睡不醒|沈砂池 沉砂池|沈積" +
+      " 沉积|沈積岩 沉积岩|沈積石 沉积石|沈筒 沉筒|沈船 沉船|沈落 沉落|沈詩任筆 沈诗任笔|沈迷 沉迷|沈迷不醒 沉迷不醒|沈醉 沉醉|沈重 沉重|" +
+      "沈降 沉降|沈陷 沉陷|沈靜 沉静|沈靜下來 沉静下来|沈香 沉香|沈鬱 沉郁|沈魚落雁 沉鱼落雁|沈默 沉默|沈默不語 沉默不语|沈默寡言 沉默寡言|" +
+      "沙逕 沙迳|河逕 河迳|流徵 流徵|浪蕩乾坤 浪荡乾坤|浮沈 浮沉|海哩 海里|深沈 深沉|深沈不露 深沉不露|溫昇豪 温昇豪|滑藉 滑借|烏昇 乌昇|" +
+      "烏沈沈 乌沉沉|烏逕 乌迳|無序 无序|狐藉虎威 狐借虎威|王彥昇 王彦昇|珍珠項鍊 珍珠项链|甚鉅 甚钜|甦生 苏生|甦醒 苏醒|申昇勳 申昇勋|申覆" +
+      " 申复|畢昇 毕昇|發覆 发覆|盧象昇 卢象昇|目劄 目劄|瞭哨 瞭哨|瞭如 了如|瞭如指掌 了如指掌|瞭望 瞭望|瞭然 了然|瞭然於心 了然于心|瞭若" +
+      "指掌 了若指掌|瞭解 了解|瞭解到 了解到|破釜沈舟 破釜沉舟|磚坏 砖坯|示覆 示复|社逕 社迳|祕丕笈 祕丕笈|祕彭祖 祕彭祖|祕瓊 祕琼|祝釐 祝" +
+      "釐|神祇 神祇|稟覆 禀复|竺乾 竺乾|答覆 答复|篤麼 笃麽|簡單明瞭 简单明了|籌畫 筹划|素藉 素借|老態龍鍾 老态龙钟|耳沈 耳沉|肉脩 肉脩|" +
+      "肘手鍊足 肘手链足|胤祕 胤祕|脩敬 脩敬|脩炳 脩炳|脩脡 脩脡|脩脯 脩脯|脩金 脩金|脫坏 脱坯|腶脩 腶脩|英哩 英里|茅蒐 茅蒐|茵藉 茵借|" +
+      "萬鍾 万锺|落雁沈魚 落雁沉鱼|蒐于紅 蒐于红|蒐於紅 蒐于红|蒐狩 蒐狩|蒐獮 蒐狝|蒐獵 蒐猎|蒐田 蒐田|蒐畋 蒐畋|蒐苗 蒐苗|蒜薹 蒜薹|蔣昇" +
+      " 蒋昇|蕓薹 芸薹|蕩覆 荡覆|蕭乾 萧乾|藉代 借代|藉以 借以|藉助 借助|藉助於 借助于|藉卉 借卉|藉口 借口|藉喻 借喻|藉寇兵 借寇兵|藉寇" +
+      "兵齎盜糧 借寇兵赍盗粮|藉手 借手|藉據 借据|藉故 借故|藉故推辭 借故推辞|藉方 借方|藉條 借条|藉槁 借槁|藉機 借机|藉此 借此|藉此機會 借" +
+      "此机会|藉甚 借甚|藉由 借由|藉着 借着|藉端 借端|藉端生事 借端生事|藉箸代籌 借箸代筹|藉草枕塊 借草枕块|藉藉 藉藉|藉藉无名 藉藉无名|藉詞" +
+      " 借词|藉讀 借读|藉資 借资|衹得 只得|衹見樹木 只见树木|衹見樹木不見森林 只见树木不见森林|袁祕 袁祕|袖裏乾坤 袖里乾坤|袷袢 袷袢|製坏 制" +
+      "坯|覆上 覆上|覆住 覆住|覆信 复信|覆冒 覆冒|覆呈 复呈|覆命 复命|覆墓 复墓|覆宗 覆宗|覆帳 复帐|覆幬 覆帱|覆成 覆成|覆按 复按|覆文" +
+      " 复文|覆杯 覆杯|覆校 复校|覆瓿 覆瓿|覆盂 覆盂|覆盆 覆盆|覆盆子 覆盆子|覆盤 覆盘|覆育 覆育|覆蕉尋鹿 覆蕉寻鹿|覆逆 覆逆|覆醢 覆醢|" +
+      "覆醬瓿 覆酱瓿|覆電 复电|覆露 覆露|覆鹿尋蕉 覆鹿寻蕉|覆鹿遺蕉 覆鹿遗蕉|覆鼎 覆鼎|見覆 见复|角徵 角徵|角徵羽 角徵羽|計畫 计划|許甦魂 " +
+      "许甦魂|變徵 变徵|變徵之聲 变徵之声|變徵之音 变徵之音|讎定 雠定|谿工 谿工|貂覆額 貂覆额|買臣覆水 买臣覆水|赤石逕 赤石迳|踅門瞭戶 踅门了" +
+      "户|躪藉 躏借|載沈載浮 载沉载浮|載浮載沈 载浮载沉|辛祕 辛祕|逆釐 逆釐|逕口 迳口|逕聯 迳联|逕頭 迳头|郭子乾 郭子乾|酒逢知己千鍾少 酒逢" +
+      "知己千锺少|醞藉 酝借|重覆 重复|金吒 金吒|金昇玟 金昇玟|金鍊 金链|鈞覆 钧复|鉅子 钜子|鉅萬 钜万|鉅防 钜防|鉸鍊 铰链|銀鍊 银链|鋼坏" +
+      " 钢坯|錢鍾書 钱锺书|鍊墜 链坠|鍊子 链子|鍊形 链形|鍊條 链条|鍊錘 链锤|鍊鎖 链锁|鍛鍾 锻锺|鍾繇 锺繇|鍾萬梅 锺万梅|鍾重發 锺重发|" +
+      "鍾鍛 锺锻|鍾馗 锺馗|鎖鍊 锁链|鐵鍊 铁链|鑽石項鍊 钻石项链|鑿坏 凿坯|閻鶴昇 阎鹤昇|陰沈 阴沉|陰沈沈 阴沉沉|陰陰沈沈 阴阴沉沉|陳志昇 " +
+      "陈志昇|陳昇 陈昇|陳甦 陈甦|陶坏 陶坯|雁杳魚沈 雁杳鱼沉|雖覆能復 虽覆能复|電覆 电复|露覆 露覆|韓昇延 韩昇延|韓甦 韩甦|項鍊 项链|頗覆" +
+      " 颇覆|頸鍊 颈链|顛乾倒坤 颠乾倒坤|顛倒乾坤 颠倒乾坤|顧藉 顾借|馮甦 冯甦|魏徵 魏徵|魚沈雁杳 鱼沉雁杳|麪坏兒 面坯儿|麼些族 麽些族|黃甦" +
+      " 黄甦|黃鍾公 黄锺公|黑沈沈 黑沉沉|龍鍾 龙钟|龔昇 龚昇"
+
+    const CHAR_T =
+      "丟並乾亂亞佈佔併來侖係倆倉個們倖倫偉側偵傑傘備傢傳傷傾僅僞僱價儀億儉儘償優儲兇兌兒兗內兩冊冪凍凱別刪則剛剝創劃劇劍劑勁動務勝勞勢勵勸匯區協卻厭厲叢吳員問" +
+      "啓啞喚喪喫喬單嗇嗎嘆嘗嘯噓噴噸嚇嚐嚨嚴囂囉囑囪國圍園圓圖團執堅報場塊塗塵塹墊墜墮墳壇壓壞壟壯壺壽夠夢夥夾奧奪奮妝姦娛婦婭媽嬌嬤嬰孫學宮實寧審寫寬寶將專尋" +
+      "對導屆屍層屬岡峯島峽崗崙嶄師帳帶幟幣幫幹幾庫廁廂廈廚廠廢廣廳張強彈彎彿後徑從復徵徹恆恥悅悶惡惱愛態慘慣慮慶慾憂憊憐憑憤憲憶應懲懷懸懼戀戰戲戶拋捲掃掛採揚" +
+      "換揮損搖搶摯撐撥撲撻撿擁擇擊擋擔據擠擬擰擴擺擾攜攝攤攪敗敘敵數斂斬斷於時晉暈暢暫曆曉曬書會東柵桿條棄棟棲楓業極榮構槍槳樂樑樓標樣樸樹樺橈橋機橢橫檔檢檯檸" +
+      "檻櫃櫚櫥櫻欄權歐歡歲歷歸殘殭殺殼毀毆氣氫決沒沖況涼淒淚淨減渦測渾湊湧湯準溝溫滅滲滷滸滾滿漁漢漣漲漸漿潔潛澀澆澗澤濃濕濟濱濺瀏瀰灑灘灣災烏無煉煙煩熱燈燒燙" +
+      "營燦燭燼爍爐爛爭爲爺爾牀牆犧狀狹猙猶獄獅獎獨獰獲獵獸獺獻獼現瑤瑪環瓊產畢畫異當疊瘋瘓瘧療癒癡癢癥癮癱發皁皚皺盜盡監盤盧睜矯確碼磚磯礙礦礫祕禍禮禱稅稈種稱" +
+      "穀穌積穩穫窩窪窮竈竊競筆筍箇節範築篤簡簽籃籌籠籤籬籲糾紀約紅紋納紐純紙級紛紮細紹紺終組絆結絕絡給絨統絲綁經綜綠綢維網綴綿緊緒線緣編緩練緻縛縫縮縱總績織繞" +
+      "繡繩繫繼繽續纏纔纖罰罵罷羅羣羨義習聖聞聯聰聲聳職聽聾脅脈脣脫脹腦腫腳腸膚膠膩膽臉臍臘臟臥臨臺與興舉舊艦艱艷茲荊莊莖華菸萊萬萵葉蒼蓋蔔蔘蔥蔭蕩薔薩藍藝藥藹" +
+      "蘆蘇蘋蘭蘿處虛號虧蛻蝕蝦螞螢蟬蟲蟻蠅蠟蠻衆術衛衝裏補裝製複褲襠襪襯襲覈見規覓視親覺覽觀觸訂計訊討訓記訝訪設許訴診註詐評詞試詩詭詮話該詳詼誇誌認誕誘語誠誡" +
+      "誤說誰課誹誼調談請諒論諜諧諷諾謀謂謊謎謗謙講謝謨謬謹證識譜譯議譴護譽讀變讓讚豐豔豬貓貝貞負財貢貧貨販貪責貴買費貼貿賀賃賄資賊賓賜賞賠賣賤賦質賭賴賺購賽贈" +
+      "贊贏贖趕跡踐躍車軌軍軟軸較載輒輕輛輝輩輪輯輸轉轎轟辦辭辮辯農迴這連週進遊運過達違遙遜遠適遲遷選遺遼邁還邊邏郵鄉鄰醃醜醞醫醬釀釁釋釘釣鈉鈕鈴鈽鉀鉛鉤銀銅銳" +
+      "銷鋪鋼錄錢錦錫錯錶鍋鍍鍛鍵鍼鍾鎖鎮鏈鏗鏘鏟鏡鏽鐘鐳鐵鐺鑑鑰鑲鑽長門閃閉開閒間閣閱閹闆闊闔闖關闡陣陰陳陸陽隊階際隨險隱隸隻雖雙雜雞離難雲電霧靈靜鞏韌韓響頁" +
+      "頂頃項順須頌預頑頓頗領頭頸頻顆題額顏願顛類顧顫顯風颱飄飆飛飪飯飲飽飾餅養餌餓餘館餵馬馴駁駐駒駕駭騎騙騰騷騾驅驕驗驚驢髒體髖髮鬆鬍鬥鬧鬱魚魯鮑鮪鮭鮮鯊鯨鰥" +
+      "鱷鳥鳳鳴鴉鴕鴨鴯鴿鵑鵝鵡鶓鶯鶴鷗鷸鷹鸚鹼鹽麗麥麪麼黃點黨齊齋齒齡龍龐龜"
+
+    const CHAR_S =
+      "丢并干乱亚布占并来仑系俩仓个们幸伦伟侧侦杰伞备家传伤倾仅伪雇价仪亿俭尽偿优储凶兑儿兖内两册幂冻凯别删则刚剥创划剧剑剂劲动务胜劳势励劝汇区协却厌厉丛吴员问" +
+      "启哑唤丧吃乔单啬吗叹尝啸嘘喷吨吓尝咙严嚣啰嘱囱国围园圆图团执坚报场块涂尘堑垫坠堕坟坛压坏垄壮壶寿够梦伙夹奥夺奋妆奸娱妇娅妈娇嬷婴孙学宫实宁审写宽宝将专寻" +
+      "对导届尸层属冈峰岛峡岗仑崭师帐带帜币帮干几库厕厢厦厨厂废广厅张强弹弯佛后径从复征彻恒耻悦闷恶恼爱态惨惯虑庆欲忧惫怜凭愤宪忆应惩怀悬惧恋战戏户抛卷扫挂采扬" +
+      "换挥损摇抢挚撑拨扑挞捡拥择击挡担据挤拟拧扩摆扰携摄摊搅败叙敌数敛斩断于时晋晕畅暂历晓晒书会东栅杆条弃栋栖枫业极荣构枪桨乐梁楼标样朴树桦桡桥机椭横档检台柠" +
+      "槛柜榈橱樱栏权欧欢岁历归残僵杀壳毁殴气氢决没冲况凉凄泪净减涡测浑凑涌汤准沟温灭渗卤浒滚满渔汉涟涨渐浆洁潜涩浇涧泽浓湿济滨溅浏弥洒滩湾灾乌无炼烟烦热灯烧烫" +
+      "营灿烛烬烁炉烂争为爷尔床墙牺状狭狰犹狱狮奖独狞获猎兽獭献猕现瑶玛环琼产毕画异当叠疯痪疟疗愈痴痒症瘾瘫发皂皑皱盗尽监盘卢睁矫确码砖矶碍矿砾秘祸礼祷税秆种称" +
+      "谷稣积稳获窝洼穷灶窃竞笔笋个节范筑笃简签篮筹笼签篱吁纠纪约红纹纳纽纯纸级纷扎细绍绀终组绊结绝络给绒统丝绑经综绿绸维网缀绵紧绪线缘编缓练致缚缝缩纵总绩织绕" +
+      "绣绳系继缤续缠才纤罚骂罢罗群羡义习圣闻联聪声耸职听聋胁脉唇脱胀脑肿脚肠肤胶腻胆脸脐腊脏卧临台与兴举旧舰艰艳兹荆庄茎华烟莱万莴叶苍盖卜参葱荫荡蔷萨蓝艺药蔼" +
+      "芦苏苹兰萝处虚号亏蜕蚀虾蚂萤蝉虫蚁蝇蜡蛮众术卫冲里补装制复裤裆袜衬袭核见规觅视亲觉览观触订计讯讨训记讶访设许诉诊注诈评词试诗诡诠话该详诙夸志认诞诱语诚诫" +
+      "误说谁课诽谊调谈请谅论谍谐讽诺谋谓谎谜谤谦讲谢谟谬谨证识谱译议谴护誉读变让赞丰艳猪猫贝贞负财贡贫货贩贪责贵买费贴贸贺赁贿资贼宾赐赏赔卖贱赋质赌赖赚购赛赠" +
+      "赞赢赎赶迹践跃车轨军软轴较载辄轻辆辉辈轮辑输转轿轰办辞辫辩农回这连周进游运过达违遥逊远适迟迁选遗辽迈还边逻邮乡邻腌丑酝医酱酿衅释钉钓钠钮铃钸钾铅钩银铜锐" +
+      "销铺钢录钱锦锡错表锅镀锻键针钟锁镇链铿锵铲镜锈钟镭铁铛鉴钥镶钻长门闪闭开闲间阁阅阉板阔阖闯关阐阵阴陈陆阳队阶际随险隐隶只虽双杂鸡离难云电雾灵静巩韧韩响页" +
+      "顶顷项顺须颂预顽顿颇领头颈频颗题额颜愿颠类顾颤显风台飘飙飞饪饭饮饱饰饼养饵饿余馆喂马驯驳驻驹驾骇骑骗腾骚骡驱骄验惊驴脏体髋发松胡斗闹郁鱼鲁鲍鲔鲑鲜鲨鲸鳏" +
+      "鳄鸟凤鸣鸦鸵鸭鸸鸽鹃鹅鹉鹋莺鹤鸥鹬鹰鹦碱盐丽麦面么黄点党齐斋齿龄龙庞龟"
+
+    const TW_IDENT =
+      "合著|合著者|名著|巨著|惡名昭著|昭著|著作|著名|著式|著志|著於|著書|著白|著稱|著稱於世|著者|著述|著錄|鉅著|顯著|顯著標志|鴻篇鉅著|著" +
+      "称"
+
+    const TW_T =
+      "么偽參吃唇啟媯嫻峰床才核汙洩溈潀灶為痴痺皂眾睪秘稜簷粽缽群著蒍裡踴針韁顎鯰麵"
+
+    const TW_S =
+      "幺僞蔘喫脣啓嬀嫺峯牀纔覈污泄潙潨竈爲癡痹皁衆睾祕棱檐糉鉢羣着蔿裏踊鍼繮齶鮎麪"
+
+    const TW_MULTI =
+      "一口吃個 一口喫個|一口吃成 一口喫成|上梁 上樑|上梁不正 上樑不正|上梁不正下梁歪 上樑不正下樑歪|上梁文 上樑文|下梁 下樑|主梁 主樑|什么 什" +
+      "麼|偷梁換柱 偷樑換柱|光脊梁 光脊樑|刺股懸梁 刺股懸樑|刺骨懸梁 刺骨懸樑|吃口 喫口|吃口飯 喫口飯|吃吃 喫喫|吃子 喫子|圈梁 圈樑|國家棟梁" +
+      " 國家棟樑|在橋梁工地上 在橋樑工地上|多么 多麼|大廈棟梁 大廈棟樑|好么 好麼|小丑跳梁 小丑跳樑|小醜跳梁 小醜跳樑|屋梁 屋樑|山梁 山樑|平梁" +
+      " 平樑|待著 待着|怎么 怎麼|懸梁 懸樑|懸梁刺股 懸樑刺股|懸梁自盡 懸樑自盡|懸臂梁 懸臂樑|戳脊梁 戳脊樑|戳脊梁骨 戳脊樑骨|扛大梁 扛大樑|" +
+      "挑大梁 挑大樑|挑正梁 挑正樑|提梁 提樑|撫梁易柱 撫樑易柱|木梁 木樑|板梁橋 板樑橋|架梁 架樑|架海金梁 架海金樑|柱梁 柱樑|梁上 樑上|梁上" +
+      "君子 樑上君子|梁子 樑子|梁木其壞 樑木其壞|梁架 樑架|梁柱 樑柱|梁棟 樑棟|棟梁 棟樑|棟梁之任 棟樑之任|棟梁之材 棟樑之材|棟梁之臣 棟樑之" +
+      "臣|椽梁 椽樑|樹梁 樹樑|橋梁 橋樑|橋梁工事 橋樑工事|橋梁工程 橋樑工程|橫打鼻梁兒 橫打鼻樑兒|橫梁 橫樑|歌聲繞梁 歌聲繞樑|正梁 正樑|沒梁" +
+      "桶 沒樑桶|沒脊梁 沒脊樑|河梁 河樑|泰山梁木 泰山樑木|津梁 津樑|漁梁 漁樑|澤梁 澤樑|濠梁 濠樑|無梁 無樑|無梁斗 無樑斗|無梁樓蓋 無樑樓" +
+      "蓋|獨挑大梁 獨挑大樑|玳梁 玳樑|玳瑁梁 玳瑁樑|甚么 甚麼|畫梁雕棟 畫樑雕棟|畫棟雕梁 畫棟雕樑|石梁 石樑|磨脊梁 磨脊樑|空梁落燕泥 空樑落燕" +
+      "泥|箱梁 箱樑|結梁子 結樑子|縱梁 縱樑|繞梁 繞樑|繞梁三日 繞樑三日|繞梁之音 繞樑之音|繞梁韻永 繞樑韻永|背梁骨 背樑骨|脊梁 脊樑|脊梁背 " +
+      "脊樑背|脊梁骨 脊樑骨|落月屋梁 落月屋樑|蠹啄剖梁柱 蠹啄剖樑柱|製麵 製麪|要么 要麼|豎柱上梁 豎柱上樑|豎起脊梁 豎起脊樑|跳梁 跳樑|跳梁小丑" +
+      " 跳樑小丑|跳梁小醜 跳樑小醜|跳梁猖獗之小丑 跳樑猖獗之小丑|跳梁猖獗之小醜 跳樑猖獗之小醜|这么 这麼|這么 這麼|過梁 過樑|那么 那麼|鋼梁 鋼" +
+      "樑|鑿壁懸梁 鑿壁懸樑|雕梁 雕樑|雕梁畫柱 雕樑畫柱|雕梁畫棟 雕樑畫棟|頂梁柱 頂樑柱|頂梁骨走了真魂 頂樑骨走了真魂|頭懸梁錐刺股 頭懸樑錐刺股|" +
+      "飛梁 飛樑|餘音繞梁 餘音繞樑|餘響繞梁 餘響繞樑|魚梁 魚樑|鼻梁 鼻樑|鼻梁兒 鼻樑兒|鼻梁骨 鼻樑骨|鼻無梁柱 鼻無樑柱"
+
+/* ── 运行时：模块加载时建表一次，之后查询是纯 Map 查找 ──────────────── */
+
+/** 汉字范围（Basic + 扩展 A）。扩展 B/C 的罕用字不进这个词库，不必覆盖。
+ *
+ *  必须声明在 toSimplified / needsConversion 之前：const 有 TDZ，
+ *  写在文件末尾会让这两个函数在首次调用时抛 ReferenceError。 */
+    const HAN_RE = /[\u3400-\u4dbf\u4e00-\u9fff]/
+
+
+/** "繁 简|繁 简" → Map。 */
+    function pairs(source, into) {
+      for (const pair of source.split('|')) {
+        const at = pair.indexOf(' ')
+        if (at > 0) into.set(pair.slice(0, at), pair.slice(at + 1))
+      }
+      return into
+    }
+
+/** "繁繁繁" + "简简简" 两条等长串 → Map（单字对，省掉每字一个空格）。 */
+    function columns(trad, simp, into) {
+      const a = [...trad]
+      const b = [...simp]
+      for (let i = 0; i < a.length && i < b.length; i += 1) into.set(a[i], b[i])
+      return into
+    }
+
+    const PHRASE_MAP = pairs(PHRASES, new Map())
+    const CHAR_MAP = columns(CHAR_T, CHAR_S, new Map())
+
+/** 遍1 用的异体归一表：单字 + 多字，外加那批阻断器。 */
+    const TW_MAP = (() => {
+      const map = columns(TW_T, TW_S, new Map())
+      pairs(TW_MULTI, map)
+      for (const key of TW_IDENT.split('|')) {
+        if (key !== '') map.set(key, key)
+      }
+      return map
+    })()
+
+/** 最长匹配的窗口上界，模块加载时算一次（别在每次转换里重算）。 */
+    const MAX_PHRASE = 10
+    const MAX_TW = 7
+
+/**
+ * 一遍最长匹配：在 [from, to) 里从长到短找表项，命中就吞掉那一段。
+ *
+ * @param {string} text
+ * @param {Map<string,string>} table
+ * @param {number} maxLen
+ * @param {string} [fallback] 未命中时的处理：给则查这张表，不给则原样保留
+ * @returns {string}
+ */
+    function longestMatch(text, table, maxLen, fallback) {
+      let out = ''
+      let i = 0
+      while (i < text.length) {
+        let hit = false
+        const limit = Math.min(maxLen, text.length - i)
+        for (let len = limit; len >= 1; len -= 1) {
+          const slice = text.slice(i, i + len)
+          const mapped = table.get(slice)
+          if (mapped !== undefined) {
+            out += mapped
+            i += len
+            hit = true
+            break
+          }
+        }
+        if (hit) continue
+        const ch = text[i]
+        out += fallback === undefined ? ch : (fallback.get(ch) ?? ch)
+        i += 1
+      }
+      return out
+    }
+
+/**
+ * 繁体 → 简体。
+ *
+ * 非字符串输入原样返回（调用方可能在渲染路径上手滑传进 null）。
+ * 拿不到汉字时不会有任何代价：正则先在整串上判一次，纯 ASCII/数字直接短路。
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+    function toSimplified(text) {
+      if (typeof text !== 'string' || text === '') return text
+  // 没有汉字就没有繁简问题，直接返回（例句里英中混排很常见）
+      if (!HAN_RE.test(text)) return text
+  // 遍1：繁异体归一（喫→吃、著→着 等）
+      const normalized = longestMatch(text, TW_MAP, MAX_TW)
+  // 遍2：繁转简（短语优先，单字兜底）
+      return longestMatch(normalized, PHRASE_MAP, MAX_PHRASE, CHAR_MAP)
+    }
+
+/**
+ * 这句里有没有可能需要转换的字。
+ *
+ * describeEntry 是热路径（每次开卡片调一次），8960 条例句里只有 3145 条含繁体。
+ * 与其对每条都跑两遍最长匹配，不如先用这个粗筛挡掉明显是简体的句子 ——
+ * 判据是「含出现在 TW_MAP 或 CHAR_MAP 键里的字」，都是 O(1) 集合查找。
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+    function needsConversion(text) {
+      if (typeof text !== 'string' || text === '') return false
+      if (!HAN_RE.test(text)) return false
+      for (const ch of text) {
+        if (TW_MAP.has(ch) || CHAR_MAP.has(ch)) return true
+      }
+      return false
+    }
+
+      return { toSimplified, needsConversion }
+    })()
+
     // ═══ dict.js ═══
     var __mod_dict = (function () {
       var { fetchAsset } = __mod_net
       var { normalizeKey, stemCandidates } = __mod_word
+      var { toSimplified, needsConversion } = __mod_t2s
 /**
  * dict.js —— 词库的加载、索引与查询。
  *
@@ -1228,6 +1506,9 @@ window.__ModuleLoader__.load({
  * （见 docs/架构.md §4.2）。
  */
 
+// 例句中文在数据里是繁中（Tatoeba 源如此），用户要简体。
+// 在 describeEntry 这一处把 zh 过一遍，卡片/复习卡/导出全部跟着变简体 ——
+// 一处接好，不必在 card.js 与 review.js 里各写一遍（那样迟早会漏一处）。
 
 /**
  * 词性 → 中文标签。数据里存的是 ECDICT 原文（带点），渲染时换成这个。
@@ -1447,7 +1728,13 @@ window.__ModuleLoader__.load({
         else if (Array.isArray(slot)) {
           examples = slot
             .filter((pair) => Array.isArray(pair) && typeof pair[0] === 'string')
-            .map((pair) => ({ en: pair[0], zh: typeof pair[1] === 'string' ? pair[1] : '' }))
+            .map((pair) => {
+              const zh = typeof pair[1] === 'string' ? pair[1] : ''
+          // 繁体转简体。describeEntry 是热路径（每次开卡片一次），
+          // 所以先用 needsConversion 粗筛：8960 条例句里只有 3145 条含繁体，
+          // 简体句与纯英文句直接跳过，不进两遍最长匹配。
+              return { en: pair[0], zh: needsConversion(zh) ? toSimplified(zh) : zh }
+            })
         }
       }
 
@@ -3140,8 +3427,20 @@ window.__ModuleLoader__.load({
       return out
     }
 
+/** 「全部」哨兵：state 与 bookId 两个下拉都用它表示「不筛」。 */
+    const ALL = 'all'
+
 /**
  * 按筛选条件从词条数组里取复习队列。
+ *
+ * **`bookId === 'all'` 必须当「不筛」**，不能当真词书 id 去匹配。
+ * 这是 1.3.2 修掉的真 bug：设置页那个词书下拉的默认值是 `'all'`（「全部词书」），
+ * 它被原样传进来当 bookId，而没有任何词的 `bookId` 是 `'all'`（都是 `'default'`），
+ * 于是 `booksOfEntry(entry).includes('all')` 恒假 —— **全部词被过滤光**，
+ * 复习队列恒空，界面永远显示「今天没有到期的词」，点「开始复习/提前复习」也毫无反应。
+ * 实测（3 个 due=0 的词）：`dueQueue()=3`，`bookId:'all'` → 0，`bookId:''` → 3。
+ *
+ * state 那边一直是这么处理的（`state !== 'all'` 才过滤），bookId 现在对齐。
  *
  * @param {object[]} entries 通常来自 `wordbook.dueQueue(now)`
  * @param {{ state?: 'all'|'unknown'|'fuzzy', bookId?: string }} [filter]
@@ -3149,10 +3448,11 @@ window.__ModuleLoader__.load({
  */
     function filterQueue(entries, filter) {
       const list = Array.isArray(entries) ? entries.filter((e) => e && typeof e.head === 'string' && e.head !== '') : []
-      const state = filter?.state ?? 'all'
-      const bookId = typeof filter?.bookId === 'string' && filter.bookId !== '' ? filter.bookId : ''
+      const state = filter?.state ?? ALL
+      const rawBook = typeof filter?.bookId === 'string' ? filter.bookId : ''
+      const bookId = rawBook !== '' && rawBook !== ALL ? rawBook : ''
       return list.filter((entry) => {
-        if (state !== 'all' && entry.state !== state) return false
+        if (state !== ALL && entry.state !== state) return false
         if (bookId !== '') {
           const books = booksOfEntry(entry)
           if (!books.includes(bookId)) return false
@@ -3335,29 +3635,62 @@ window.__ModuleLoader__.load({
     }
 
 /**
- * 念一个词；已经在念同一个词就停下（再点一次 = 停止）。
+ * 当前正在念的那个词。null = 没在念（或念完了）。
+ *
+ * 为什么需要它：句柄只有「有没有在念」，没有「在念哪个词」。只判
+ * `speaking===true` 就把「换一个词接着念」误当成「再点一次=停止」，
+ * 于是念 A 时点 B 的喇叭 → cancel 掉 A 却不念 B —— 用户听到的是静音。
+ * 实测就是这个现象，也是用户说的「有些词有声音、有些没有」（停下来后
+ * 再点同一个词才出声）。
+ */
+    let currentWord = null
+
+/**
+ * 念一个词；已经在念**同一个词**就停下（再点一次 = 停止）。
+ *
+ * 三种情况要分清（这就是这条修的核心）：
+ *   1. 正在念 A，点 A  → cancel，返回 'stop'（设计 §E1 的再点即停）
+ *   2. 正在念 A，点 B  → cancel 掉 A，然后**接着念 B**（返回 'speak'）
+ *   3. 没在念，点 X    → 清残留后念 X
  *
  * 只走浏览器内置的 speechSynthesis，不引在线发音接口（离线红线）。
  * 任何异常都吃掉并返回 'failed'，卡片渲染路径上不能抛。
  *
  * @param {string} word
+ * @param {() => void} [onDone] 念完/出错/被停时回调（按钮用它复位 speaking 状态）
  * @returns {'speak' | 'stop' | 'unsupported' | 'failed'}
  */
-    function speakWord(word) {
+    function speakWord(word, onDone) {
       if (!canSpeak()) return 'unsupported'
       const text = String(word ?? '').trim()
       if (text === '') return 'failed'
+      const done = typeof onDone === 'function' ? onDone : null
       try {
-    // 再点一次 = 停止（设计 §E1）。先判有没有在念，有就 cancel 并返回 stop。
-        if (speechSynthesis.speaking === true || speechSynthesis.pending === true) {
+        const busy = speechSynthesis.speaking === true || speechSynthesis.pending === true
+
+    // 情况 1：正在念的就是这个词 → 停
+        if (busy && currentWord === text) {
           speechSynthesis.cancel()
+          currentWord = null
+          if (done) done()
           return 'stop'
         }
-    // 上一次的残留先清掉，避免队列里堆着旧词
+
+    // 情况 2 / 3：换词接着念，或本来就没在念。
+    // 都要先 cancel 清掉残留（换词时就是停掉旧词，之后**不返回**，继续往下念新词）。
         speechSynthesis.cancel()
+        currentWord = text
         const utterance = new SpeechSynthesisUtterance(text)
         utterance.lang = 'en-US'
         utterance.rate = 0.9
+    // 念完/出错要复位：既清 currentWord（下次点同一个词能重新念），
+    // 也让按钮把那颗高亮状态收回去 —— 否则按钮会一直显示「正在念」。
+        const settle = () => {
+          if (currentWord === text) currentWord = null
+          if (done) done()
+        }
+        utterance.onend = settle
+        utterance.onerror = settle
         speechSynthesis.speak(utterance)
         return 'speak'
       } catch {
@@ -3413,7 +3746,9 @@ window.__ModuleLoader__.load({
         onClick: (event) => {
           event.preventDefault()
           event.stopPropagation()
-          const result = speakWord(word)
+      // 把「念完了」的复位接到按钮上：不接的话 data-speaking 会一直是 true，
+      // 用户看到喇叭一直亮着像还在念，而且下一次点击的语义也会错乱。
+          const result = speakWord(word, () => setSpeaking(false))
           setSpeaking(result === 'speak')
         },
       }, '🔊')
@@ -5752,6 +6087,15 @@ window.__ModuleLoader__.load({
       border1: 'var(--dsw-alias-border-l1, rgba(255,255,255,0.12))',
       border2: 'var(--dsw-alias-border-l2, rgba(255,255,255,0.20))',
       accent: 'var(--dsw-alias-brand-primary, #4d6bfe)',
+  // 「反色块」底色/字色：主按钮、开关轨道、复选框这类实心块用它。
+  //
+  // 为什么不用 accent 当底色：宿主深色主题的 brand-primary 是 **近白**（#f9fafb），
+  // 配写死的 #fff 就是白底白字（实测 contrast 1.05），配 label-primary 也一样。
+  // 反过来用 label-primary 当**底**、bg-base 当**字**，两套主题都自动是反色：
+  //   亮色 #0f1115 底 + #fff 字 → 18.90；深色 #f9fafb 底 + #151517 字 → 17.45。
+  // 两个都是宿主语义 token，不新增写死色值。
+      invert: 'var(--dsw-alias-label-primary, #0f1115)',
+      onAccent: 'var(--dsw-alias-bg-base, #fff)',
       danger: 'var(--dsw-alias-state-error-primary, #e5484d)',
       success: 'var(--dsw-alias-state-success-primary, #2f9e44)',
       warn: 'var(--dsw-alias-state-warn-primary, #f0a441)',
@@ -5871,7 +6215,7 @@ window.__ModuleLoader__.load({
 
       const paint = {
         default: { background: C.bg1, color: C.text, border: C.border2 },
-        primary: { background: C.accent, color: '#fff', border: 'transparent' },
+        primary: { background: C.invert, color: C.onAccent, border: 'transparent' },
         ghost: { background: 'transparent', color: C.textDim, border: 'transparent' },
         danger: { background: 'transparent', color: C.danger, border: `color-mix(in srgb, ${C.danger} 55%, transparent)` },
       }[variant]
@@ -5952,7 +6296,7 @@ window.__ModuleLoader__.load({
             flex: 'none',
             borderRadius: RADIUS.pill,
             border: `1px solid ${on ? 'transparent' : C.border2}`,
-            background: on ? C.accent : C.bg1,
+            background: on ? C.invert : C.bg1,
             boxShadow: 'inset 0 1px 3px rgba(0,0,0,0.18)',
             transition: `background .22s ${EASE.out}, border-color .22s ${EASE.out}`,
           },
@@ -5964,7 +6308,7 @@ window.__ModuleLoader__.load({
             width: 15,
             height: 15,
             borderRadius: '50%',
-            background: on ? '#fff' : C.textFaint,
+            background: on ? C.onAccent : C.textFaint,
             boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
             transform: on ? 'translateX(17px)' : 'translateX(0)',
             transition: `transform .28s ${EASE.settle}, background .2s ${EASE.out}`,
@@ -6412,9 +6756,9 @@ window.__ModuleLoader__.load({
           padding: 0,
           borderRadius: 5,
           border: `1px solid ${on ? 'transparent' : C.border2}`,
-          background: on ? C.accent : C.bgBase,
+          background: on ? C.invert : C.bgBase,
           boxShadow: 'inset 0 1px 2px rgba(0,0,0,0.14)',
-          color: '#fff',
+          color: C.onAccent,
           fontSize: 11,
           lineHeight: 1,
           cursor: 'pointer',
@@ -6501,7 +6845,7 @@ window.__ModuleLoader__.load({
 
     // ═══ settings.js ═══
     var __mod_settings = (function () {
-      var { loadUx, saveUx, DEFAULT_MARK_COLOR, MARK_COLOR_PRESETS } = __mod_config
+      var { loadUx, saveUx, DEFAULT_APPEARANCE, DEFAULT_MARK_COLOR, MARK_COLOR_PRESETS, PAGE_SIZE_OPTIONS } = __mod_config
       var { markColorToCss } = __mod_marker
       var { makePrimitives } = __mod_ui
       var { parseImportDetailed, summarizeImport, glossText, IMPORT_FORMATS } = __mod_importer
@@ -6530,13 +6874,11 @@ window.__ModuleLoader__.load({
 // 注意：注释不能写在上面的 import 花括号内部，构建器按逗号切名字会把它当导入名。
 
 /**
- * 生词本表格每页行数（设计 §B1：50 行一页）。
- *
- * v1 这里是个 chips 墙，用 CHIP_LIMIT=120 硬截断，超出的只留一句「还有 N 个」。
- * v2 改成真分页：全部词都能翻到，所以 CHIP_LIMIT 这个常量已经删掉了 ——
- * 现在「上限有交代」由下面的 PAGE_SIZE 与 PREVIEW_ROW_LIMIT 承担。
+ * 生词本每页行数：1.3.1 之前是写死的常量（v1 甚至用 CHIP_LIMIT=120 硬截断），
+ * 1.3.2 起改成用户可调的三档 —— 值走 ux.appearance.pageSize，
+ * 档位定义在 config.js 的 PAGE_SIZE_OPTIONS。这里不再留定值常量：
+ * 留一个「已废弃但仍导出」的副本只会让人以为它还有效。
  */
-    const PAGE_SIZE = 50
 
 /**
  * 导入预览表最多渲染多少行。
@@ -6709,17 +7051,20 @@ window.__ModuleLoader__.load({
     .hds-btn:disabled::after { content: none; }
 
     .hds-btn-primary {
-      background: linear-gradient(180deg,
-        color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 88%, #fff),
-        var(--dsw-alias-brand-primary, #4d6bfe));
-      border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 82%, #000);
-      color: var(--dsw-alias-label-primary, #fff);
+  /* 反色块：底色取 label-primary（亮色近黑 #0f1115、深色近白 #f9fafb），
+     字取 bg-base（亮色白、深色 #151517）。两套主题都自动是「深底白字 / 浅底深字」。
+     不用 brand-primary 当底 —— 宿主深色下它本身就是近白（#f9fafb），
+     配写死白字就是白底白字（1.3.1 实测 1.05），配 label-primary 字也还是近白对近白。
+     底色不做渐变：渐变会把某一档往背景基色方向拉，深色下正好把浅底拉浅、
+     字反而不够黑；纯 token 平涂，亮暗都稳在 18.90。 */
+      background: var(--dsw-alias-label-primary, #0f1115);
+      border-color: color-mix(in srgb, var(--dsw-alias-label-primary, #0f1115) 82%, #000);
+      color: var(--dsw-alias-bg-base, #fff);
       box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%), inset 0 -10px 18px -12px rgb(0 0 0 / 24%);
     }
     .hds-btn-primary:hover:not(:disabled) {
-      background: linear-gradient(180deg,
-        var(--dsw-alias-brand-primary, #4d6bfe),
-        color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 88%, #000));
+  /* 悬停往背景基色方向退一点：亮色略变浅、深色略变深，两边都还有 12+ 的对比。 */
+      background: color-mix(in srgb, var(--dsw-alias-label-primary, #0f1115) 88%, var(--dsw-alias-bg-base, #ffffff));
     }
     .hds-btn-ghost {
       background: transparent; border-color: transparent; box-shadow: none;
@@ -6803,11 +7148,13 @@ window.__ModuleLoader__.load({
     }
     .hds-switch:active .hds-switch-track::after { width: 18px; }
     .hds-switch[aria-checked="true"] .hds-switch-track {
-      background: var(--dsw-alias-brand-primary, #4d6bfe);
-      border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 85%, #000);
+  /* 反色块，与 .hds-btn-primary 同一套：亮色深轨道+白滑块，深色浅轨道+深滑块。
+     用 brand-primary 当轨道会踩同一个坑（深色下近白），滑块 = 白 → 实测 1.00 隐形。 */
+      background: var(--dsw-alias-label-primary, #0f1115);
+      border-color: color-mix(in srgb, var(--dsw-alias-label-primary, #0f1115) 85%, #000);
     }
     .hds-switch[aria-checked="true"] .hds-switch-track::after {
-      transform: translateX(17px); background: var(--dsw-alias-label-primary, #fff);
+      transform: translateX(17px); background: var(--dsw-alias-bg-base, #fff);
     }
     .hds-switch[aria-checked="true"]:active .hds-switch-track::after { transform: translateX(14px); }
     .hds-switch:focus-visible .hds-switch-track {
@@ -7352,10 +7699,14 @@ window.__ModuleLoader__.load({
       ]
 
       const body = []
-      if (tab === 'book') body.push(bookTab({ h, P, book, dict, stats, say, bump, storage, bookVersion }))
+  // 五个页签一律走 h(Component) 组件调用，**不许**在这里直接调页签函数。
+  // 直接调用会把该页签的 useState/useEffect 记到 SettingsPanel 自己的 fiber 上，
+  // 于是 SettingsPanel 的 hooks 数随页签变化（book=14 / appearance=8 / 其余=4），
+  // 切页签时 React 18 抛「Rendered fewer hooks than expected」，无错误边界整棵设置页卸载 —— 一片空白。
+      if (tab === 'book') body.push(h(bookTab, { key: 'book', h, P, book, dict, stats, say, bump, storage, bookVersion, ux, patchAppearance }))
       else if (tab === 'review') body.push(h(ReviewTab, { key: 'review', h, P, book, dict, stats, say, bump }))
       else if (tab === 'import') body.push(h(ImportTab, { key: 'import', h, P, book, dict, say, bump }))
-      else if (tab === 'appearance') body.push(appearanceTab({ h, P, ux, patchAppearance, dictInfo: props?.dictInfo, packsDir, storage, section, field, setUx }))
+      else if (tab === 'appearance') body.push(h(appearanceTab, { key: 'appearance', h, P, ux, patchAppearance, dictInfo: props?.dictInfo, packsDir, storage, section, field, setUx }))
       else body.push(h(YoudaoTab, {
         key: 'youdao', h, P, book, say, onGoBook: () => { setTab('book'); setMessage(null) },
       }))
@@ -7392,8 +7743,19 @@ window.__ModuleLoader__.load({
    ═══════════════════════════════════════════════════════════════════════ */
 
     function bookTab(ctx) {
-      const { h, P, book, dict, stats, say, bump, storage } = ctx
-      const { Card, Button, Input, Select, Badge, Note, Stat, Chip, Checkbox, GAP, FS, C } = P
+      const { h, P, book, dict, stats, say, bump, storage, ux, patchAppearance } = ctx
+      const { Card, Button, Input, Select, Badge, Note, Stat, Chip, Checkbox, Segment, GAP, FS, C } = P
+
+  /**
+   * 每页行数。三档 10/15/20，默认 20，值来自 localStorage（界面偏好，不进宿主 Config）。
+   *
+   * 兜一层 clampAppearance：ux 可能来自旧存档（没有 pageSize 这个键），
+   * 或者被外部改坏。这里再夹一次，保证 pageSize 一定是三档之一 ——
+   * 否则 0 会让切片算出空页、NaN 会让 pageCount 变成 NaN。
+   */
+      const pageSize = PAGE_SIZE_OPTIONS.includes(ux?.appearance?.pageSize)
+        ? ux.appearance.pageSize
+        : DEFAULT_APPEARANCE.pageSize
 
       const [query, setQuery] = useState('')
       const [stateFilter, setStateFilter] = useState('all')
@@ -7419,9 +7781,9 @@ window.__ModuleLoader__.load({
         return matchQuery(entry, query.trim(), dict)
       })
       const sorted = sortEntries(filtered, sortMode)
-      const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE))
+      const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize))
       const safePage = Math.min(page, pageCount - 1)
-      const rows = sorted.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE)
+      const rows = sorted.slice(safePage * pageSize, safePage * pageSize + pageSize)
       const pageHeads = rows.map((row) => row.head)
       const allOnPageSelected = pageHeads.length > 0 && pageHeads.every((head) => selected.includes(head))
 
@@ -7635,18 +7997,40 @@ window.__ModuleLoader__.load({
               }).flat(),
             ]),
 
-      /* 分页 + 导出 */
-          sorted.length > PAGE_SIZE
-            ? h('div', { key: 'pager', className: 'hds-pager' }, [
-              h('span', { key: 'info' }, `第 ${safePage + 1}/${pageCount} 页 · 共 ${sorted.length} 个`),
-              h('span', { key: 'btns', style: { display: 'flex', gap: GAP.xs } }, [
+      /* 分页 + 导出。
+         注意：「每页 N 行」选择器**必须常驻**，不能跟翻页按钮一起被
+         `pageCount > 1` 藏掉 —— 否则用户词少时（或词表空时）根本找不到
+         调档的入口，得先加足够的词才能改。翻页按钮才按 pageCount 显示。 */
+          h('div', { key: 'pager', className: 'hds-pager' }, [
+            h('span', { key: 'info' },
+              pageCount > 1
+                ? `第 ${safePage + 1}/${pageCount} 页 · 共 ${sorted.length} 个`
+                : (sorted.length === 0 ? '没有词' : `共 ${sorted.length} 个词`)),
+            h('span', {
+              key: 'size',
+              style: { display: 'inline-flex', alignItems: 'center', gap: GAP.xs },
+            }, [
+              h('span', { key: 'l', style: { fontSize: FS.small, color: C.textDim } }, '每页'),
+              h(Segment, {
+                value: pageSize,
+                items: PAGE_SIZE_OPTIONS.map((n) => ({ id: n, label: String(n) })),
+                onChange: (next) => {
+                  const value = Number(next)
+                  if (!PAGE_SIZE_OPTIONS.includes(value)) return
+              // 换档回第一页：回第一页比夹取更符合直觉，也彻底避开越界
+                  setPage(0)
+                  if (typeof patchAppearance === 'function') patchAppearance('pageSize', value)
+                },
+                label: '每页行数',
+              }),
+            ]),
+            pageCount > 1
+              ? h('span', { key: 'btns', style: { display: 'flex', gap: GAP.xs } }, [
                 h(Button, { key: 'prev', label: '上一页', size: 'sm', disabled: safePage <= 0, onClick: () => setPage(Math.max(0, safePage - 1)) }),
                 h(Button, { key: 'next', label: '下一页', size: 'sm', disabled: safePage >= pageCount - 1, onClick: () => setPage(Math.min(pageCount - 1, safePage + 1)) }),
-              ]),
-            ])
-            : h('div', { key: 'pager1', className: 'hds-pager' }, [
-              h('span', { key: 'info' }, sorted.length === 0 ? '没有词' : `共 ${sorted.length} 个词`),
-            ]),
+              ])
+              : null,
+          ]),
 
           h('div', { key: 'exports', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
             h(Button, { key: 't', label: '导出 txt', size: 'sm', disabled: all.length === 0, onClick: () => onExport('txt') }),
@@ -7895,11 +8279,29 @@ window.__ModuleLoader__.load({
   /* ── 未开始 / 队列空 ── */
       if (queue === null || queue.length === 0) {
         const empty = queue !== null && queue.length === 0
+
+    // 空态文案分两种，不能一句「今天没有到期的词」糊过去：
+    //
+    // stats.dueToday 的口径是 `due < 今天结束`（今天之内会到期的都算），
+    // 而 dueQueue 的口径是 `due <= 此刻`。词 due 设在今天中午、现在还是早上时，
+    // 「今日到期 49」和「没有到期的词」会同时出现在一屏上，自相矛盾 ——
+    // 用户看到的就是「明明写着 49 个，却说到期的是 0 个、按钮点了也没反应」。
+    //
+    // 选的处理是**分开说**（不动 SRS 逻辑，不放宽 dueQueue）：
+    //   dueToday > 0 时，标题与 hint 都说「此刻」可复习的是 0，并交代今日到期的
+    //   那些还没到复习点；dueToday === 0 时才是真的「今天没有到期的词」。
+    // 放宽 dueQueue 到 todayEnd 会让还没到复习点的词提前出现，违背间隔本意，不选。
+        const dueLater = stats.dueToday > 0
+        const title = dueLater ? '此刻没有可复习的词' : '今天没有到期的词'
+        const hint = dueLater
+          ? `此刻可复习的是 0 个 —— 今日到期 ${stats.dueToday} 个还没到复习点，今天稍晚会陆续到期。可以先提前复习最早到期的词，或去导入新词。`
+          : '此刻可复习的是 0 个。可以提前复习最早到期的词，或去导入新词。'
+
         return h('div', { style: { display: 'flex', flexDirection: 'column', gap: GAP.md } }, [
           h(Card, {
             key: 'start',
-            title: empty ? '今天没有到期的词' : '开始复习',
-            hint: empty ? '队列是空的。可以提前复习最早到期的词，或去导入新词。' : `今日到期 ${stats.dueToday} 个。空格翻面，1/2/3 评分。`,
+            title: empty ? title : '开始复习',
+            hint: empty ? hint : `今日到期 ${stats.dueToday} 个。空格翻面，1/2/3 评分。`,
           }, [
             h('div', { key: 'stats', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
               h(Stat, { key: 'a', label: '今日到期', value: stats.dueToday, tone: 'accent' }),
@@ -8591,6 +8993,135 @@ window.__ModuleLoader__.load({
       return status.valid === true ? 'ready' : 'stale'
     }
 
+/* ── 浏览器登录会话（点「登录有道」→ 宿主开可见窗口 → 自动取 Cookie） ── */
+
+/** 轮询间隔。宿主那边登录是一秒级的事，2 秒一次既跟得上也不吵。 */
+    const YOUDAO_LOGIN_POLL_MS = 2000
+
+/**
+ * 登录会话 UI 的初始状态。
+ *
+ * 抽成纯函数是为了 smoke 能直接对着状态机验「pending→success」：
+ * 组件里的轮询要真发请求，测试不该依赖网络与 GUI。
+ *
+ * phase 取值：
+ *   idle     还没点（或已取消/已重置）
+ *   starting 已点，等 start 回话
+ *   waiting  窗口开着，等用户在里面登录
+ *   done     拿到了 Cookie 且宿主验证通过
+ *   failed   起不来（E_NO_BROWSER）、超时、被取消、会话没了
+ *
+ * degraded=true 是**能力**结论（这台机器没有 Chrome），不是一次失败：
+ * 界面上要把「登录有道」置灰并指向手动粘贴，而不是给个重试按钮让人反复点。
+ *
+ * @returns {{ phase: string, sessionId: string, message: string, degraded: boolean, nickname: string, polls: number, code: string }}
+ */
+    function youdaoLoginInitial() {
+      return { phase: 'idle', sessionId: '', message: '', degraded: false, nickname: '', polls: 0, code: '' }
+    }
+
+/** 登录相关 E_ → 面板话术。E_NO_BROWSER 要明确指向手动粘贴。 */
+    function youdaoLoginErrorText(error) {
+      const code = String(error?.code ?? '')
+      const message = typeof error?.message === 'string' && error.message !== '' ? error.message : '登录没成功'
+      if (code === 'E_NO_BROWSER') {
+        return `自动登录不可用：${message}。用下面的「手动粘贴 Cookie」一样能连上，不用装任何东西。`
+      }
+      if (code === 'E_LOGIN_TIMEOUT') return '等了 10 分钟没等到登录完成，窗口已经关了。可以再点一次「登录有道」。'
+      if (code === 'E_LOGIN_CANCELLED') return '已取消登录。'
+      if (code === 'E_LOGIN_NOT_FOUND') return '这个登录会话已经失效了，再点一次「登录有道」就好。'
+      return message
+    }
+
+/**
+ * 登录会话状态机（纯函数）。
+ *
+ * 事件：
+ *   {type:'start-request'}                    点了「登录有道」
+ *   {type:'start-reply', payload}             POST /youdao/login/start 的响应
+ *   {type:'poll', payload}                    GET  /youdao/login/poll 的响应
+ *   {type:'cancel'}                           点了取消
+ *   {type:'reset'}                            回到初始
+ *
+ * 为什么不把「停不停轮询」写在组件里：那是这条流程里最容易错的一处
+ * （少停一次就是无限打宿主；早停一次就是用户登录完了却永远显示等待中）。
+ * 收进纯函数，smoke 能把每条分支都点一遍。
+ *
+ * @param {ReturnType<typeof youdaoLoginInitial>} state
+ * @param {{ type: string, payload?: any }} event
+ * @returns {ReturnType<typeof youdaoLoginInitial>}
+ */
+    function youdaoLoginReduce(state, event) {
+      const base = state ?? youdaoLoginInitial()
+      const type = event?.type
+
+      if (type === 'reset') return youdaoLoginInitial()
+
+      if (type === 'start-request') {
+    // 保留 degraded：这台机器没有 Chrome 这件事不会因为再点一次就变
+        return { ...youdaoLoginInitial(), degraded: base.degraded, phase: 'starting' }
+      }
+
+      if (type === 'start-reply') {
+        const payload = event.payload
+        const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : ''
+        if (payload?.ok === true && sessionId !== '') {
+          return { ...base, phase: 'waiting', sessionId, message: '', polls: 0, code: '' }
+        }
+        const code = String(payload?.error?.code ?? 'E_LOGIN_FAILED')
+        return {
+          ...base,
+          phase: 'failed',
+          sessionId: '',
+          code,
+          degraded: code === 'E_NO_BROWSER',
+          message: youdaoLoginErrorText(payload?.error),
+        }
+      }
+
+      if (type === 'cancel') {
+        return { ...youdaoLoginInitial(), degraded: base.degraded, phase: 'idle', message: '已取消登录。' }
+      }
+
+      if (type === 'poll') {
+        const payload = event.payload
+        if (payload?.ok === true) {
+      // success 说明宿主已经取到 Cookie、验证过、落盘了
+          if (payload.status === 'success') {
+            return {
+              ...base,
+              phase: 'done',
+              sessionId: '',
+              message: '',
+              code: '',
+              nickname: typeof payload.nickname === 'string' ? payload.nickname : '',
+            }
+          }
+      // pending 及一切「还没完」的答复都继续等
+          return { ...base, phase: 'waiting', polls: base.polls + 1 }
+        }
+        const code = String(payload?.error?.code ?? 'E_LOGIN_FAILED')
+    // 网络抖一下不该判会话死掉：宿主那边窗口还开着，用户可能正在输密码
+        if (code === 'E_NETWORK' || code === 'E_YOUDAO_TIMEOUT' || code === 'E_BAD_JSON') {
+          return { ...base, phase: 'waiting', polls: base.polls + 1, message: youdaoLoginErrorText(payload?.error) }
+        }
+        return {
+          ...base,
+          phase: 'failed',
+          sessionId: '',
+          code,
+          message: youdaoLoginErrorText(payload?.error),
+        }
+      }
+
+      return base
+    }
+
+/** 当前状态还要不要继续轮询。 */
+    function youdaoLoginShouldPoll(state) {
+      return state?.phase === 'waiting' && typeof state.sessionId === 'string' && state.sessionId !== ''
+    }
+
 /**
  * 一键抓取完成后的结果条文案（设计 §D3）。
  *
@@ -8645,6 +9176,20 @@ window.__ModuleLoader__.load({
       })
       const [targetBook, setTargetBook] = useState('default')
       const [manualOpen, setManualOpen] = useState(false)
+  // 手动粘贴区的展开状态。自动登录是主路径，所以默认收起。
+      const [manualPasteOpen, setManualPasteOpen] = useState(false)
+  // 登录会话状态（点「登录有道」→ 宿主开可见窗口 → 自动取 Cookie）
+      const [login, setLogin] = useState(() => youdaoLoginInitial())
+  // 轮询定时器。用 ref 而不是 state：它不该触发重渲染，也不是渲染结果的一部分
+      const loginTimer = useRef(null)
+  // 卸载标记。光在 cleanup 里 clearTimeout 不够：如果卸载那一刻正好有一个
+  // poll 请求在飞，它的 .then 回来后还会排一个新的定时器，于是留下一个
+  // 没人停的轮询一直打宿主。所以排定时器前必须看这个标记。
+      const aliveRef = useRef(true)
+  // 登录状态的同源副本。poll 回调要读「最新」而不是「本轮渲染时的」状态，
+  // 而 setLogin 的更新函数必须是纯的（React 可能重复调用），不能在里面排定时器。
+      const loginRef = useRef(login)
+      loginRef.current = login
 
       const refreshStatus = () => {
         setChecking(true)
@@ -8669,6 +9214,83 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         try { if (typeof book?.listBooks === 'function') setBooks(book.listBooks()) } catch { /* ignore */ }
       }, [book])
+
+  /** 停掉轮询。所有「不用再等了」的路径都必须走它，别留一个还在打的定时器。 */
+      const stopPolling = () => {
+        if (loginTimer.current !== null) {
+          clearTimeout(loginTimer.current)
+          loginTimer.current = null
+        }
+      }
+
+  // 卸载时把定时器收干净 —— 用户切走页签时不能留一个还在打宿主的计时器
+      useEffect(() => () => {
+        aliveRef.current = false
+        stopPolling()
+      }, [])
+
+  /**
+   * 轮一次，并在需要时自己排下一次。
+   *
+   * 注意：状态更新函数必须是纯的（React 可能重复调用它），所以「要不要继续轮询」
+   * 的判断放在**更新函数外面**，只看刚拿到的 payload 与当前 phase。
+   */
+      const pollOnce = (sessionId) => {
+        youdaoRequest('GET', `/login/poll?session=${encodeURIComponent(sessionId)}`).then((payload) => {
+          const next = youdaoLoginReduce(loginRef.current, { type: 'poll', payload })
+          loginRef.current = next
+          setLogin(next)
+          if (youdaoLoginShouldPoll(next) && aliveRef.current) {
+            loginTimer.current = setTimeout(() => pollOnce(next.sessionId), YOUDAO_LOGIN_POLL_MS)
+          } else {
+            stopPolling()
+        // 成功要走一遍 status：状态卡上的昵称/词数都来自 /status
+            if (next.phase === 'done') refreshStatus()
+          }
+        }).catch(() => {
+      // 网络异常在 reduce 里已折成「继续等」，这里只负责排下一次
+          if (youdaoLoginShouldPoll(loginRef.current) && aliveRef.current) {
+            loginTimer.current = setTimeout(() => pollOnce(loginRef.current.sessionId), YOUDAO_LOGIN_POLL_MS)
+          }
+        })
+      }
+
+  /** 点「登录有道」：让宿主起可见窗口，然后开始轮询。 */
+      const onLogin = () => {
+        stopPolling()
+        const starting = youdaoLoginReduce(loginRef.current, { type: 'start-request' })
+        loginRef.current = starting
+        setLogin(starting)
+        setFailure(null)
+        youdaoRequest('POST', '/login/start').then((payload) => {
+          const next = youdaoLoginReduce(starting, { type: 'start-reply', payload })
+          loginRef.current = next
+          setLogin(next)
+          if (youdaoLoginShouldPoll(next) && aliveRef.current) {
+            loginTimer.current = setTimeout(() => pollOnce(next.sessionId), YOUDAO_LOGIN_POLL_MS)
+          }
+        }).catch(() => {
+          const next = youdaoLoginReduce(starting, {
+            type: 'start-reply',
+            payload: { ok: false, error: { code: 'E_NETWORK', message: '连不上宿主，请确认插件已启用' } },
+          })
+          loginRef.current = next
+          setLogin(next)
+        })
+      }
+
+  /** 取消：先关宿主那个窗口，再清本地状态。 */
+      const onLoginCancel = () => {
+        const sessionId = loginRef.current.sessionId
+        stopPolling()
+        const next = youdaoLoginReduce(loginRef.current, { type: 'cancel' })
+        loginRef.current = next
+        setLogin(next)
+        if (sessionId !== '') {
+      // 不关心结果：窗口关不掉也就是个残留窗口，不该卡住界面
+          void youdaoRequest('POST', '/login/cancel', { sessionId })
+        }
+      }
 
       const hasCookie = status?.hasCookie === true
       const mode = youdaoMode(status, checking)
@@ -8741,6 +9363,67 @@ window.__ModuleLoader__.load({
         }).catch(() => setSyncing(false))
       }
 
+  // ── 登录区：点「登录有道」→ 宿主开可见窗口 → 自动取 Cookie ──
+      const loginBlock = (() => {
+    // 已连上就不必再显示登录入口（状态卡已经说明「已连接」）
+        if (mode === 'ready' || mode === 'checking') return null
+        if (login.degraded && login.phase !== 'waiting' && login.phase !== 'starting') {
+      // 这台机器没有可用浏览器：不给人一个点了也没用的按钮
+          return h(Note, {
+            key: 'login-degraded',
+            tone: 'warn',
+            text: login.message || youdaoLoginErrorText({ code: 'E_NO_BROWSER', message: '这台机器上没找到 Chrome' }),
+          })
+        }
+        if (login.phase === 'waiting') {
+          return h('div', {
+            key: 'login-waiting',
+            style: { display: 'flex', flexDirection: 'column', gap: GAP.sm },
+          }, [
+            h('div', { key: 't', className: 'hds-status-card', 'data-tone': 'ok' }, [
+              h('div', { key: 'm', className: 'hds-status-main' }, [
+                h('div', { key: 'h', className: 'hds-status-title' }, '正在等你在浏览器里登录…'),
+                h('div', { key: 'd', className: 'hds-status-meta' },
+                  '已经帮你打开一个有道的登录窗口，在那个窗口里登录就行。登录完成后这里会自动连上，不用回来点任何东西。'),
+              ]),
+            ]),
+            h('div', { key: 'b', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
+              h(Button, { key: 'c', label: '取消登录', variant: 'default', size: 'sm', onClick: onLoginCancel }),
+              login.message !== ''
+                ? h('span', { key: 'n', style: { fontSize: FS.small, color: C.textFaint, alignSelf: 'center' } }, login.message)
+                : null,
+            ]),
+          ])
+        }
+        if (login.phase === 'starting') {
+          return h('div', {
+            key: 'login-starting',
+            style: { display: 'flex', alignItems: 'center', gap: GAP.sm },
+          }, [
+            h(Button, { key: 'b', label: '正在打开登录窗口…', variant: 'primary', busy: true }),
+          ])
+        }
+    // idle / failed / done 都回到这个主按钮
+        return h('div', {
+          key: 'login-idle',
+          style: { display: 'flex', flexDirection: 'column', gap: GAP.xs + 2 },
+        }, [
+          h('div', { key: 'row', style: { display: 'flex', gap: GAP.sm, alignItems: 'center', flexWrap: 'wrap' } }, [
+            h(Button, {
+              key: 'go',
+              label: login.phase === 'failed' ? '重试登录有道' : '登录有道',
+              variant: 'primary',
+              onClick: onLogin,
+            }),
+            h('span', { key: 'hint', style: { fontSize: FS.small, color: C.textFaint } },
+              '点一下会打开一个有道的登录窗口，登录完自动连上，不用复制 Cookie。'),
+          ]),
+          login.phase === 'failed' && login.message !== ''
+            ? h(Note, { key: 'err', tone: 'err', text: login.message })
+            : null,
+        ])
+      })()
+
   // ── 状态卡 ──
       const statusCard = (() => {
         if (mode === 'checking') {
@@ -8766,7 +9449,7 @@ window.__ModuleLoader__.load({
             h('div', { key: 'm', className: 'hds-status-main' }, [
               h('div', { key: 't', className: 'hds-status-title' }, 'Cookie 已失效'),
               h('div', { key: 'd', className: 'hds-status-meta' },
-                '有道那边不认这段登录态了。重新走一遍下面四步，把新的 Cookie 粘进来。'),
+                '有道那边不认这段登录态了。点下面的「登录有道」重新连一次最省事。'),
             ]),
             h(Badge, { key: 'b', text: '失效', tone: 'danger' }),
           ])
@@ -8775,14 +9458,31 @@ window.__ModuleLoader__.load({
           h('div', { key: 'm', className: 'hds-status-main' }, [
             h('div', { key: 't', className: 'hds-status-title' }, '还没连接有道'),
             h('div', { key: 'd', className: 'hds-status-meta' },
-              '按下面四步复制一次 Cookie 就行，不用在这里输账号密码。'),
+              '点「登录有道」会自动打开一个有道的登录窗口，登录完就自动连上了。'),
           ]),
           h(Badge, { key: 'b', text: '未配置', tone: 'neutral' }),
         ])
       })()
 
-  // ── 四步引导（未配置 / 失效时都显示，失效的人也需要照着重做） ──
-      const steps = (mode === 'empty' || mode === 'stale') ? h('ol', {
+  // ── 手动粘贴 Cookie（兜底）：默认折叠，自动登录不可用它才是主路径 ──
+  // 自动登录走不通（没装 Chrome、起不来、或者用户就是习惯手动）时才展开。
+  // 降级态（degraded）默认展开 —— 那时它是唯一能用的一条路，别让人再点一次「看手动方法」。
+      const manualSectionOpen = manualPasteOpen || login.degraded
+      const manualToggle = (mode === 'empty' || mode === 'stale' || hasCookie) ? h('div', {
+        key: 'manual-toggle',
+        style: { display: 'flex', alignItems: 'center', gap: GAP.sm, flexWrap: 'wrap' },
+      }, [
+        h(Button, {
+          key: 't',
+          label: manualSectionOpen ? '收起手动粘贴 Cookie' : '手动粘贴 Cookie（备选方式）',
+          variant: 'ghost',
+          size: 'sm',
+          onClick: () => setManualPasteOpen(!manualSectionOpen),
+        }),
+      ]) : null
+
+  // ── 四步引导（只在手动区展开、且未连接/失效时显示） ──
+      const steps = manualSectionOpen && !hasCookie ? h('ol', {
         key: 'steps', className: 'hds-steps',
       }, YOUDAO_STEPS.map((step, index) => h('li', { key: String(index), className: 'hds-step' }, [
         h('span', { key: 'n', className: 'hds-step-no', 'aria-hidden': 'true' }, String(index + 1)),
@@ -8792,7 +9492,14 @@ window.__ModuleLoader__.load({
         ]),
       ]))) : null
 
-      const cookieField = (mode === 'empty' || mode === 'stale') ? h(Field, {
+  // 失效时即便用户收起手动区，也得看到「要重新弄一次」的红条
+      const staleHint = (mode === 'stale') ? h(Note, {
+        key: 'stale-note',
+        tone: 'err',
+        text: 'Cookie 失效了。重新点一次「登录有道」最省事；也可以展开下面的手动区，复制一段新的贴进去。',
+      }) : null
+
+      const cookieField = manualSectionOpen && (mode === 'empty' || mode === 'stale' || hasCookie) ? h(Field, {
         key: 'cookie',
         label: 'Cookie',
         hint: '粘贴后输入框内容会被隐藏。保存成功后自动清空，不会留在这台机器以外的地方。',
@@ -8817,12 +9524,15 @@ window.__ModuleLoader__.load({
             ? h(Button, { key: 'clear', label: '清除', variant: 'danger', size: 'sm', onClick: onClear })
             : null,
         ]),
-      ]) : h('div', {
+      ]) : null
+
+  // 「清除 Cookie」单独一块：已连接时手动区是折叠的，清除入口得留在外面
+      const clearBlock = hasCookie && !manualSectionOpen ? h('div', {
         key: 'connected',
         style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' },
       }, [
         h(Button, { key: 'clear2', label: '清除 Cookie', variant: 'danger', size: 'sm', onClick: onClear }),
-      ])
+      ]) : null
 
   // ── 抓取区 ──
       const syncBlock = (mode === 'ready') ? h('div', {
@@ -8899,18 +9609,27 @@ window.__ModuleLoader__.load({
       return h(Card, {
         key: 'youdao',
         title: '有道同步',
-        hint: '把有道词典收藏夹里的词一次性抓进生词本。只需复制一次 Cookie，不在这里输账号密码。',
+        hint: '把有道词典收藏夹里的词一次性抓进生词本。点「登录有道」会自动连上，不用自己复制 Cookie。',
       }, [
         statusCard,
-        (mode === 'stale') ? h(Note, {
-          key: 'stale',
-          tone: 'err',
-          text: 'Cookie 失效了。照着下面四步重新复制一次，旧的会被覆盖。',
-        }) : null,
+    // 未连接 / 失效时才给登录入口。已连接就直接显示同步区。
+        loginBlock,
+        staleHint,
         failureBlock,
+        syncBlock,
+        login.phase === 'done'
+          ? h(Note, {
+            key: 'login-ok',
+            tone: 'ok',
+            text: login.nickname !== ''
+              ? `已通过浏览器登录连上有道（${login.nickname}）。`
+              : '已通过浏览器登录连上有道。',
+          })
+          : null,
+        clearBlock,
+        manualToggle,
         steps,
         cookieField,
-        syncBlock,
         fallbackBlock,
         !showFallback
           ? h('div', { key: 'manual', style: { display: 'flex', alignItems: 'center', gap: GAP.sm } }, [
@@ -9009,7 +9728,7 @@ window.__ModuleLoader__.load({
       }
       return () => { try { node.remove() } catch { /* ignore */ } }
     }
-      return { SettingsPanel, bookTab, ReviewTab, ImportTab, appearanceTab, syncedAtLabel, youdaoMode, youdaoSyncResult, YoudaoTab, readPacks, writePacks, readMaxHanRatioRaw, readTranslator, writeTranslator, translatorChain, ensureSettingsStyle }
+      return { SettingsPanel, bookTab, ReviewTab, ImportTab, appearanceTab, syncedAtLabel, youdaoMode, youdaoLoginInitial, youdaoLoginErrorText, youdaoLoginReduce, youdaoLoginShouldPoll, youdaoSyncResult, YoudaoTab, readPacks, writePacks, readMaxHanRatioRaw, readTranslator, writeTranslator, translatorChain, ensureSettingsStyle }
     })()
 
     // ═══ card.js ═══
@@ -10825,6 +11544,7 @@ window.__ModuleLoader__.load({
     exports.MarkerLayerHost = __mod_overlay.MarkerLayerHost
     exports.MissNotice = __mod_card.MissNotice
     exports.OverlayHost = __mod_app.OverlayHost
+    exports.PAGE_SIZE_OPTIONS = __mod_config.PAGE_SIZE_OPTIONS
     exports.PhraseBody = __mod_overlay.PhraseBody
     exports.PopoverBody = __mod_overlay.PopoverBody
     exports.PronounceButton = __mod_review.PronounceButton
@@ -10914,6 +11634,7 @@ window.__ModuleLoader__.load({
     exports.markCss = __mod_marker.markCss
     exports.matchWordsInText = __mod_marker.matchWordsInText
     exports.measureHits = __mod_marker.measureHits
+    exports.needsConversion = __mod_t2s.needsConversion
     exports.nextSrs = __mod_srs.nextSrs
     exports.nodeIdentity = __mod_anchor.nodeIdentity
     exports.normalizeKey = __mod_word.normalizeKey
@@ -10950,6 +11671,7 @@ window.__ModuleLoader__.load({
     exports.syncedAtLabel = __mod_settings.syncedAtLabel
     exports.tagLabel = __mod_config.tagLabel
     exports.textOfNode = __mod_marker.textOfNode
+    exports.toSimplified = __mod_t2s.toSimplified
     exports.translatorChain = __mod_settings.translatorChain
     exports.unionOf = __mod_selection.unionOf
     exports.unionRect = __mod_position.unionRect
@@ -10958,6 +11680,10 @@ window.__ModuleLoader__.load({
     exports.wordAt = __mod_word.wordAt
     exports.writePacks = __mod_settings.writePacks
     exports.writeTranslator = __mod_settings.writeTranslator
+    exports.youdaoLoginErrorText = __mod_settings.youdaoLoginErrorText
+    exports.youdaoLoginInitial = __mod_settings.youdaoLoginInitial
+    exports.youdaoLoginReduce = __mod_settings.youdaoLoginReduce
+    exports.youdaoLoginShouldPoll = __mod_settings.youdaoLoginShouldPoll
     exports.youdaoMode = __mod_settings.youdaoMode
     exports.youdaoSyncResult = __mod_settings.youdaoSyncResult
 

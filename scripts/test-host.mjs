@@ -18,7 +18,10 @@ import { fileURLToPath } from 'node:url'
 import { gunzipSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
 
-import { API_PREFIX, createAssetResolver, createHandler, createYoudaoStore } from '../index.js'
+import {
+  API_PREFIX, createAssetResolver, createHandler, createYoudaoLoginManager, createYoudaoStore,
+  launchYoudaoLoginBrowser,
+} from '../index.js'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const DATA_DIR = join(ROOT, 'data')
@@ -37,6 +40,7 @@ async function serve(options) {
     youdaoFetch,
     youdaoGapMs,
     youdaoStore,
+    youdaoLogin,
     dataDir: injectedDataDir,
     ...rest
   } = options ?? {}
@@ -50,6 +54,7 @@ async function serve(options) {
     ...(youdaoFetch !== undefined ? { youdaoFetch } : {}),
     ...(youdaoGapMs !== undefined ? { youdaoGapMs } : {}),
     ...(youdaoStore !== undefined ? { youdaoStore } : {}),
+    ...(youdaoLogin !== undefined ? { youdaoLogin } : {}),
   })
   const server = createServer((req, res) => { void handler(req, res) })
   await new Promise((done) => server.listen(0, '127.0.0.1', done))
@@ -745,6 +750,333 @@ console.log('\n[7] 词库缺失与禁用')
     record('两页之间间隔 ≥400ms', gaps >= 380, `${gaps}ms`)
   } finally {
     await twoPageServer.close()
+  }
+
+  console.log('\n[8.3] 有道浏览器登录会话：start / poll / cancel')
+
+  // 假浏览器：照 launchYoudaoLoginBrowser 返回的最小契约造，不碰 GUI 与外网。
+  function makeFakeBrowser() {
+    const state = {
+      url: 'https://c.youdao.com/common-login-web/index.html?redirect_url=https%3A%2F%2Fdict.youdao.com%2F',
+      cookies: [
+        { name: 'OUTFOX_SEARCH_USER_ID_NCOO', value: '1234.5678', domain: '.youdao.com' },
+        { name: 'OUTFOX_SEARCH_USER_ID', value: '42@1.2.3.4', domain: '.youdao.com' },
+      ],
+      closed: 0,
+      launched: 0,
+    }
+    return {
+      state,
+      // 模拟「用户已经在窗口里登录完」：跳回 dict 域 + 多出登录态 Cookie
+      signIn() {
+        state.url = 'https://dict.youdao.com/'
+        // 真实浏览器里同名 Cookie 会被覆盖，不会并存，这里跟着保持一致
+        state.cookies = state.cookies.filter((item) => !item.name.startsWith('DICT_'))
+        state.cookies.push({ name: 'DICT_SESS', value: 'v2|loggedin123456', domain: '.youdao.com' })
+        state.cookies.push({ name: 'DICT_LOGIN', value: '2|1234567890', domain: '.youdao.com' })
+      },
+      browser: {
+        async launch() {
+          state.launched += 1
+          return {
+            profileDir: '/tmp/fake-login-profile',
+            pageUrl: () => state.url,
+            readCookies: async () => state.cookies.slice(),
+            close: async () => { state.closed += 1 },
+          }
+        },
+      },
+    }
+  }
+
+  /** 登录会话用的 dataDir：独立临时目录，验证 Cookie 落盘与权限。 */
+  const loginDir = mkdtempSync(join(tmpdir(), 'dsh-hover-dict-login-'))
+  const loginCookiePath = join(loginDir, 'youdao-cookie.json')
+  const LOGIN_NICK = '登录窗口用户'
+
+  const accountinfoMock = (() => {
+    const calls = []
+    const mock = async (url, opts = {}) => {
+      calls.push({ url: String(url), cookie: String(opts?.headers?.cookie ?? '') })
+      if (String(url).includes('/login/acc/query/accountinfo')) {
+        return fakeRes(200, JSON.stringify({ code: 0, msg: 'SUCCESS', data: { nickname: LOGIN_NICK } }))
+      }
+      if (String(url).includes('/wordbook/webapi/v2/word/list')) {
+        return fakeRes(200, JSON.stringify({ code: 0, msg: 'SUCCESS', data: { total: 0, list: [] } }))
+      }
+      return fakeRes(404, '{}')
+    }
+    mock.calls = calls
+    return mock
+  })()
+
+  const fake = makeFakeBrowser()
+  const clock = { t: Date.now() }
+  const loginManager = createYoudaoLoginManager({
+    browser: fake.browser,
+    now: () => clock.t,
+  })
+  const loginServer = await serve({
+    youdaoFetch: accountinfoMock,
+    youdaoGapMs: 0,
+    dataDir: loginDir,
+    youdaoLogin: loginManager,
+  })
+
+  let goodSessionId = ''
+  try {
+    // --- start ---
+    const startRes = await fetch(`${loginServer.origin}/youdao/login/start`, { method: 'POST' })
+    const startBody = await startRes.json()
+    record('POST login/start → 200 ok',
+      startRes.status === 200 && startBody?.ok === true, `status=${startRes.status}`)
+    record('start 返回 sessionId',
+      typeof startBody?.sessionId === 'string' && startBody.sessionId.length > 8,
+      startBody?.sessionId)
+    record('start 返回的 loginUrl 走 c.youdao.com 登录页',
+      String(startBody?.loginUrl ?? '').startsWith('https://c.youdao.com/common-login-web/index.html'),
+      startBody?.loginUrl)
+    record('loginUrl 带 redirect_url 指回 dict.youdao.com',
+      String(startBody?.loginUrl ?? '').includes(encodeURIComponent('https://dict.youdao.com/')),
+      startBody?.loginUrl)
+    record('start 带上会话存活时长（10 分钟）',
+      startBody?.ttlMs === 600000, `ttlMs=${startBody?.ttlMs}`)
+    record('start 起了浏览器会话', fake.state.launched === 1, `launched=${fake.state.launched}`)
+    goodSessionId = String(startBody?.sessionId ?? '')
+
+    // --- poll：还没登录 ---
+    const pendingRes = await fetch(`${loginServer.origin}/youdao/login/poll?session=${goodSessionId}`)
+    const pendingBody = await pendingRes.json()
+    record('未登录时 poll → 200 pending',
+      pendingRes.status === 200 && pendingBody?.status === 'pending',
+      `status=${pendingRes.status} state=${pendingBody?.status}`)
+    record('pending 报当前 Cookie 数（匿名基线）',
+      pendingBody?.cookieCount === 2, `cookieCount=${pendingBody?.cookieCount}`)
+    record('pending 不落 Cookie 文件', !existsFile(loginCookiePath), loginCookiePath)
+    record('pending 不关窗口（用户还在登录）', fake.state.closed === 0, `closed=${fake.state.closed}`)
+
+    // --- 关键反例：Cookie 已经冒出来了，但窗口还停在登录页 → 必须仍是 pending ---
+    // 实测匿名 Cookie 数量会在 5~6 之间抖动，所以「Cookie 变多」不能当登录判据，
+    // 只认「URL 跳回 dict 域」。这里把 Cookie 塞满、URL 留在 c.youdao.com 上验证。
+    fake.state.cookies.push(
+      { name: 'DICT_SESS', value: 'v2|premature', domain: '.youdao.com' },
+      { name: 'DICT_LOGIN', value: '2|premature', domain: '.youdao.com' },
+    )
+    const onLoginPageBody = await (await fetch(`${loginServer.origin}/youdao/login/poll?session=${goodSessionId}`)).json()
+    record('Cookie 已出现但还停在登录页 → 仍报 pending（不许误判登录成功）',
+      onLoginPageBody?.status === 'pending', `state=${onLoginPageBody?.status}`)
+    record('这条 pending 报真实 Cookie 数（供前端显示进展）',
+      onLoginPageBody?.cookieCount >= 4, `cookieCount=${onLoginPageBody?.cookieCount}`)
+    record('还停在登录页时没有落 Cookie 文件', !existsFile(loginCookiePath), loginCookiePath)
+    record('还停在登录页时不提前关窗口', fake.state.closed === 0, `closed=${fake.state.closed}`)
+
+    // --- 用户在窗口里登录完 ---
+    fake.signIn()
+    const okRes = await fetch(`${loginServer.origin}/youdao/login/poll?session=${goodSessionId}`)
+    const okBody = await okRes.json()
+    record('登录完成 → poll 报 success',
+      okRes.status === 200 && okBody?.status === 'success' && okBody?.valid === true,
+      `status=${okRes.status} state=${okBody?.status}`)
+    record('success 带回昵称', okBody?.nickname === LOGIN_NICK, okBody?.nickname)
+    record('success 响应体不回显 Cookie 明文',
+      !JSON.stringify(okBody).includes('DICT_SESS'),
+      JSON.stringify(okBody).includes('DICT_SESS') ? '泄露了 Cookie！' : '安全')
+    record('Cookie 已落盘', existsFile(loginCookiePath), loginCookiePath)
+    const loginMode = existsFile(loginCookiePath) ? (statSync(loginCookiePath).mode & 0o777) : -1
+    record('登录拿到的 Cookie 权限是 0o600', loginMode === 0o600, `mode=0o${loginMode.toString(8)}`)
+    record('落盘 Cookie 与窗口里的一致',
+      existsFile(loginCookiePath)
+      && String(JSON.parse(readFileSync(loginCookiePath, 'utf8')).cookie ?? '').includes('DICT_SESS=v2|loggedin123456'),
+      loginCookiePath)
+    record('验证请求带上了窗口里拼出的 Cookie 头',
+      accountinfoMock.calls.some((c) => c.cookie.includes('DICT_SESS=v2|loggedin123456')
+        && c.cookie.includes('OUTFOX_SEARCH_USER_ID')),
+      accountinfoMock.calls.map((c) => c.cookie.slice(0, 40)).join(' | '))
+    record('success 后窗口被关掉', fake.state.closed >= 1, `closed=${fake.state.closed}`)
+    record('success 后会话不再占活跃位', loginManager.size() === 0, `size=${loginManager.size()}`)
+
+    // --- 再 poll 一次仍是 success（幂等） ---
+    const againBody = await (await fetch(`${loginServer.origin}/youdao/login/poll?session=${goodSessionId}`)).json()
+    record('已成功的会话再 poll 仍报 success', againBody?.status === 'success', againBody?.status)
+
+    // --- status 路由能读到刚落的 Cookie ---
+    const stBody = await (await fetch(`${loginServer.origin}/youdao/status`)).json()
+    record('登录成功后 /youdao/status 报 hasCookie:true',
+      stBody?.hasCookie === true && stBody?.valid === true, JSON.stringify(stBody))
+
+    // --- cancel ---
+    const start2 = await (await fetch(`${loginServer.origin}/youdao/login/start`, { method: 'POST' })).json()
+    const cancelRes = await fetch(`${loginServer.origin}/youdao/login/cancel`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ sessionId: start2?.sessionId }),
+    })
+    const cancelBody = await cancelRes.json()
+    record('POST login/cancel → 200 ok',
+      cancelRes.status === 200 && cancelBody?.ok === true, `status=${cancelRes.status}`)
+    record('cancel 后窗口被关掉', fake.state.closed >= 2, `closed=${fake.state.closed}`)
+    record('cancel 后无活跃会话残留', loginManager.size() === 0, `size=${loginManager.size()}`)
+    const cancelledPoll = await fetch(`${loginServer.origin}/youdao/login/poll?session=${start2?.sessionId}`)
+    const cancelledBody = await cancelledPoll.json()
+    record('取消后的会话 poll 报 E_LOGIN_CANCELLED',
+      cancelledBody?.error?.code === 'E_LOGIN_CANCELLED', cancelledBody?.error?.code)
+    record('取消不是 pending（前端据此停止轮询）',
+      cancelledBody?.status !== 'pending', String(cancelledBody?.status))
+
+    // --- 未知会话 ---
+    const unknownRes = await fetch(`${loginServer.origin}/youdao/login/poll?session=deadbeef-not-a-session`)
+    const unknownBody = await unknownRes.json()
+    record('未知会话 → 404', unknownRes.status === 404, `status=${unknownRes.status}`)
+    record('未知会话错误码 E_LOGIN_NOT_FOUND',
+      unknownBody?.error?.code === 'E_LOGIN_NOT_FOUND', unknownBody?.error?.code)
+
+    const noIdRes = await fetch(`${loginServer.origin}/youdao/login/poll`)
+    record('poll 缺 session 参数 → 400 E_LOGIN_NOT_FOUND', noIdRes.status === 400, `status=${noIdRes.status}`)
+    await noIdRes.arrayBuffer()
+
+    // --- 方法闸门 ---
+    const startGet = await fetch(`${loginServer.origin}/youdao/login/start`)
+    record('GET login/start → 405', startGet.status === 405, `status=${startGet.status}`)
+    await startGet.arrayBuffer()
+    const cancelGet = await fetch(`${loginServer.origin}/youdao/login/cancel`)
+    record('GET login/cancel → 405', cancelGet.status === 405, `status=${cancelGet.status}`)
+    await cancelGet.arrayBuffer()
+    const pollPost = await fetch(`${loginServer.origin}/youdao/login/poll?session=x`, { method: 'POST' })
+    record('POST login/poll → 405', pollPost.status === 405, `status=${pollPost.status}`)
+    await pollPost.arrayBuffer()
+  } finally {
+    await loginServer.close()
+    await loginManager.disposeAll()
+  }
+
+  console.log('\n[8.35] 有道登录会话：过期与无浏览器降级')
+
+  // 过期：把时钟推过 10 分钟，窗口该被关掉，poll 报 expired
+  const expireDir = mkdtempSync(join(tmpdir(), 'dsh-hover-dict-login-exp-'))
+  const expireFake = makeFakeBrowser()
+  const expireClock = { t: Date.now() }
+  const expireManager = createYoudaoLoginManager({
+    browser: expireFake.browser,
+    now: () => expireClock.t,
+  })
+  const expireServer = await serve({
+    youdaoFetch: accountinfoMock, youdaoGapMs: 0, dataDir: expireDir, youdaoLogin: expireManager,
+  })
+  try {
+    const started = await (await fetch(`${expireServer.origin}/youdao/login/start`, { method: 'POST' })).json()
+    expireClock.t += 10 * 60 * 1000 + 1000
+    const res = await fetch(`${expireServer.origin}/youdao/login/poll?session=${started?.sessionId}`)
+    const body = await res.json()
+    record('超 10 分钟的会话 poll → 410', res.status === 410, `status=${res.status}`)
+    record('过期错误码 E_LOGIN_TIMEOUT', body?.error?.code === 'E_LOGIN_TIMEOUT', body?.error?.code)
+    record('过期后窗口被关掉', expireFake.state.closed >= 1, `closed=${expireFake.state.closed}`)
+    record('过期后不落 Cookie 文件', !existsFile(join(expireDir, 'youdao-cookie.json')),
+      join(expireDir, 'youdao-cookie.json'))
+    const st = await (await fetch(`${expireServer.origin}/youdao/status`)).json()
+    record('过期登录没有悄悄写成已配置', st?.hasCookie === false, `hasCookie=${st?.hasCookie}`)
+  } finally {
+    await expireServer.close()
+    await expireManager.disposeAll()
+  }
+
+  // 没有浏览器：start 必须明确报 E_NO_BROWSER，前端才能降级到手动粘贴
+  const noBrowserDir = mkdtempSync(join(tmpdir(), 'dsh-hover-dict-login-nb-'))
+  const noBrowserManager = createYoudaoLoginManager({
+    browser: {
+      async launch() {
+        throw Object.assign(
+          new Error('找不到 Chrome（或 Edge/Chromium），自动登录不可用。请用手动粘贴 Cookie'),
+          { code: 'E_NO_BROWSER' },
+        )
+      },
+    },
+  })
+  const noBrowserServer = await serve({
+    youdaoFetch: accountinfoMock, youdaoGapMs: 0, dataDir: noBrowserDir, youdaoLogin: noBrowserManager,
+  })
+  try {
+    const res = await fetch(`${noBrowserServer.origin}/youdao/login/start`, { method: 'POST' })
+    const body = await res.json()
+    record('没有浏览器时 start → 503', res.status === 503, `status=${res.status}`)
+    record('无浏览器错误码 E_NO_BROWSER', body?.error?.code === 'E_NO_BROWSER', body?.error?.code)
+    record('无浏览器的文案指向手动粘贴兜底',
+      String(body?.error?.message ?? '').includes('手动粘贴'), body?.error?.message)
+    record('无浏览器时不残留活跃会话', noBrowserManager.size() === 0, `size=${noBrowserManager.size()}`)
+  } finally {
+    await noBrowserServer.close()
+    await noBrowserManager.disposeAll()
+  }
+
+  // 真浏览器工厂的守护：Chrome 不存在就必须抛 E_NO_BROWSER，不能硬起一个空白窗口
+  try {
+    await launchYoudaoLoginBrowser({ executablePath: '/nonexistent/definitely-not-chrome' })
+    record('Chrome 不存在时 launchYoudaoLoginBrowser 抛 E_NO_BROWSER', false, '居然没抛错')
+  } catch (error) {
+    record('Chrome 不存在时 launchYoudaoLoginBrowser 抛 E_NO_BROWSER',
+      error?.code === 'E_NO_BROWSER', error?.code ?? error?.message)
+  }
+
+  console.log('\n[8.4] 有道登录会话：iframe 兜底与假登录态防误判')
+
+  // 场景 A：URL 一直停在登录页（登录在 iframe 里完成），过 60 秒后用当前 Cookie 兜底验证
+  const fbDir = mkdtempSync(join(tmpdir(), 'dsh-hover-dict-login-fb-'))
+  const fbCookiePath = join(fbDir, 'youdao-cookie.json')
+  const fbFake = makeFakeBrowser()
+  // 只种 Cookie，不动 URL —— 模拟外层一直不跳的 iframe 登录
+  fbFake.state.cookies.push({ name: 'DICT_SESS', value: 'v2|iframelogin999', domain: '.youdao.com' })
+  const fbClock = { t: Date.now() }
+  const fbManager = createYoudaoLoginManager({ browser: fbFake.browser, now: () => fbClock.t })
+  const fbServer = await serve({
+    youdaoFetch: accountinfoMock, youdaoGapMs: 0, dataDir: fbDir, youdaoLogin: fbManager,
+  })
+  try {
+    const started = await (await fetch(`${fbServer.origin}/youdao/login/start`, { method: 'POST' })).json()
+    const stillPending = await (await fetch(`${fbServer.origin}/youdao/login/poll?session=${started?.sessionId}`)).json()
+    record('URL 未跳转且未到 60 秒 → 仍 pending',
+      stillPending?.status === 'pending', `state=${stillPending?.status}`)
+    record('pending 带回会话已过的毫秒（供前端显示等待中）',
+      Number.isFinite(stillPending?.ageMs), `ageMs=${stillPending?.ageMs}`)
+
+    fbClock.t += 61 * 1000
+    const fbRes = await fetch(`${fbServer.origin}/youdao/login/poll?session=${started?.sessionId}`)
+    const fbBody = await fbRes.json()
+    record('60 秒后 URL 仍未跳但 Cookie 有效 → 兜底判 success',
+      fbRes.status === 200 && fbBody?.status === 'success', `state=${fbBody?.status}`)
+    record('兜底路径也把 Cookie 落盘了', existsFile(fbCookiePath), fbCookiePath)
+  } finally {
+    await fbServer.close()
+    await fbManager.disposeAll()
+  }
+
+  // 场景 B：60 秒后拿匿名 Cookie 去兜底 —— accountinfo 说未登录，绝不能报 success
+  const fakeExpiredMock = async (url) => {
+    const u = String(url)
+    if (u.includes('/accountinfo')) return fakeRes(200, JSON.stringify({ msg: 'NO_LOGIN', code: 2035 }))
+    if (u.includes('/word/list')) return fakeRes(200, JSON.stringify({ code: 401, msg: '用户未登录', data: null }))
+    return fakeRes(404, '{}')
+  }
+  const bDir = mkdtempSync(join(tmpdir(), 'dsh-hover-dict-login-b-'))
+  const bFake = makeFakeBrowser()
+  const bClock = { t: Date.now() }
+  const bManager = createYoudaoLoginManager({ browser: bFake.browser, now: () => bClock.t })
+  const bServer = await serve({
+    youdaoFetch: fakeExpiredMock, youdaoGapMs: 0, dataDir: bDir, youdaoLogin: bManager,
+  })
+  try {
+    const started = await (await fetch(`${bServer.origin}/youdao/login/start`, { method: 'POST' })).json()
+    bClock.t += 61 * 1000
+    const res = await fetch(`${bServer.origin}/youdao/login/poll?session=${started?.sessionId}`)
+    const body = await res.json()
+    record('兜底验证不通过 → 仍是 pending，不许报 success',
+      body?.status === 'pending', `state=${body?.status}`)
+    record('兜底失败原因如实带回（no-login）',
+      body?.reason === 'no-login', `reason=${body?.reason}`)
+    record('兜底失败不落 Cookie 文件', !existsFile(join(bDir, 'youdao-cookie.json')),
+      join(bDir, 'youdao-cookie.json'))
+    record('兜底失败不关窗口（用户还能继续尝试）', bFake.state.closed === 0,
+      `closed=${bFake.state.closed}`)
+  } finally {
+    await bServer.close()
+    await bManager.disposeAll()
   }
 
   const failed = results.filter((item) => !item.ok)

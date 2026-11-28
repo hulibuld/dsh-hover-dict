@@ -55,8 +55,20 @@ export function booksOfEntry(entry) {
   return out
 }
 
+/** 「全部」哨兵：state 与 bookId 两个下拉都用它表示「不筛」。 */
+const ALL = 'all'
+
 /**
  * 按筛选条件从词条数组里取复习队列。
+ *
+ * **`bookId === 'all'` 必须当「不筛」**，不能当真词书 id 去匹配。
+ * 这是 1.3.2 修掉的真 bug：设置页那个词书下拉的默认值是 `'all'`（「全部词书」），
+ * 它被原样传进来当 bookId，而没有任何词的 `bookId` 是 `'all'`（都是 `'default'`），
+ * 于是 `booksOfEntry(entry).includes('all')` 恒假 —— **全部词被过滤光**，
+ * 复习队列恒空，界面永远显示「今天没有到期的词」，点「开始复习/提前复习」也毫无反应。
+ * 实测（3 个 due=0 的词）：`dueQueue()=3`，`bookId:'all'` → 0，`bookId:''` → 3。
+ *
+ * state 那边一直是这么处理的（`state !== 'all'` 才过滤），bookId 现在对齐。
  *
  * @param {object[]} entries 通常来自 `wordbook.dueQueue(now)`
  * @param {{ state?: 'all'|'unknown'|'fuzzy', bookId?: string }} [filter]
@@ -64,10 +76,11 @@ export function booksOfEntry(entry) {
  */
 export function filterQueue(entries, filter) {
   const list = Array.isArray(entries) ? entries.filter((e) => e && typeof e.head === 'string' && e.head !== '') : []
-  const state = filter?.state ?? 'all'
-  const bookId = typeof filter?.bookId === 'string' && filter.bookId !== '' ? filter.bookId : ''
+  const state = filter?.state ?? ALL
+  const rawBook = typeof filter?.bookId === 'string' ? filter.bookId : ''
+  const bookId = rawBook !== '' && rawBook !== ALL ? rawBook : ''
   return list.filter((entry) => {
-    if (state !== 'all' && entry.state !== state) return false
+    if (state !== ALL && entry.state !== state) return false
     if (bookId !== '') {
       const books = booksOfEntry(entry)
       if (!books.includes(bookId)) return false
@@ -250,29 +263,62 @@ export function canSpeak() {
 }
 
 /**
- * 念一个词；已经在念同一个词就停下（再点一次 = 停止）。
+ * 当前正在念的那个词。null = 没在念（或念完了）。
+ *
+ * 为什么需要它：句柄只有「有没有在念」，没有「在念哪个词」。只判
+ * `speaking===true` 就把「换一个词接着念」误当成「再点一次=停止」，
+ * 于是念 A 时点 B 的喇叭 → cancel 掉 A 却不念 B —— 用户听到的是静音。
+ * 实测就是这个现象，也是用户说的「有些词有声音、有些没有」（停下来后
+ * 再点同一个词才出声）。
+ */
+let currentWord = null
+
+/**
+ * 念一个词；已经在念**同一个词**就停下（再点一次 = 停止）。
+ *
+ * 三种情况要分清（这就是这条修的核心）：
+ *   1. 正在念 A，点 A  → cancel，返回 'stop'（设计 §E1 的再点即停）
+ *   2. 正在念 A，点 B  → cancel 掉 A，然后**接着念 B**（返回 'speak'）
+ *   3. 没在念，点 X    → 清残留后念 X
  *
  * 只走浏览器内置的 speechSynthesis，不引在线发音接口（离线红线）。
  * 任何异常都吃掉并返回 'failed'，卡片渲染路径上不能抛。
  *
  * @param {string} word
+ * @param {() => void} [onDone] 念完/出错/被停时回调（按钮用它复位 speaking 状态）
  * @returns {'speak' | 'stop' | 'unsupported' | 'failed'}
  */
-export function speakWord(word) {
+export function speakWord(word, onDone) {
   if (!canSpeak()) return 'unsupported'
   const text = String(word ?? '').trim()
   if (text === '') return 'failed'
+  const done = typeof onDone === 'function' ? onDone : null
   try {
-    // 再点一次 = 停止（设计 §E1）。先判有没有在念，有就 cancel 并返回 stop。
-    if (speechSynthesis.speaking === true || speechSynthesis.pending === true) {
+    const busy = speechSynthesis.speaking === true || speechSynthesis.pending === true
+
+    // 情况 1：正在念的就是这个词 → 停
+    if (busy && currentWord === text) {
       speechSynthesis.cancel()
+      currentWord = null
+      if (done) done()
       return 'stop'
     }
-    // 上一次的残留先清掉，避免队列里堆着旧词
+
+    // 情况 2 / 3：换词接着念，或本来就没在念。
+    // 都要先 cancel 清掉残留（换词时就是停掉旧词，之后**不返回**，继续往下念新词）。
     speechSynthesis.cancel()
+    currentWord = text
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.lang = 'en-US'
     utterance.rate = 0.9
+    // 念完/出错要复位：既清 currentWord（下次点同一个词能重新念），
+    // 也让按钮把那颗高亮状态收回去 —— 否则按钮会一直显示「正在念」。
+    const settle = () => {
+      if (currentWord === text) currentWord = null
+      if (done) done()
+    }
+    utterance.onend = settle
+    utterance.onerror = settle
     speechSynthesis.speak(utterance)
     return 'speak'
   } catch {
@@ -328,7 +374,9 @@ export function PronounceButton(props) {
     onClick: (event) => {
       event.preventDefault()
       event.stopPropagation()
-      const result = speakWord(word)
+      // 把「念完了」的复位接到按钮上：不接的话 data-speaking 会一直是 true，
+      // 用户看到喇叭一直亮着像还在念，而且下一次点击的语义也会错乱。
+      const result = speakWord(word, () => setSpeaking(false))
       setSpeaking(result === 'speak')
     },
   }, '🔊')

@@ -70,12 +70,19 @@ t('字号用标度', settings.includes('FS.body') || settings.includes('--fs-bod
 // 允许 20（页面标题）与 10.5（徽章）；其余字号必须走 FS
 t('没有散落的字号', !/fontSize:\s*1[0-9](?:\.[05])?\b/.test(settings.replace(/fontSize:\s*10\.5/g, '')))
 t('不用原生确认框', !settings.includes('window.confirm('))
-// v2 把 chips 墙的 120 硬截断换成真分页（PAGE_SIZE=50），所以这条的判据也要跟着换。
+// v2 把 chips 墙的 120 硬截断换成真分页，1.3.2 起再改成用户可调的三档
+// （10/15/20，默认 20，值走 ux.appearance.pageSize），所以这条的判据跟着换：
+// 钉「分页真的按可调档位算」，不再钉某个写死的数字。
 //
 // 踩过的坑：旧写法是 `settings.includes('CHIP_LIMIT')`，而 CHIP_LIMIT 只在
 // settings.js 的**注释**里出现过（说明 v1 用过、v2 删了）—— 断言是靠一句历史
-// 注释通过的，属假通过。现在钉在真常量上，并反向断言硬截断常量没有被加回来。
-t('分页真常量存在', /const PAGE_SIZE\s*=\s*50\b/.test(settings), 'PAGE_SIZE = 50')
+// 注释通过的，属假通过。现在钉在真实现上（每页行数取自三档常量 + 切片用它），
+// 并反向断言硬截断常量没有被加回来。
+t('分页档位来自可调常量', /PAGE_SIZE_OPTIONS\.includes\(ux\?\.appearance\?\.pageSize\)/.test(settings),
+  'bookTab 里应有 PAGE_SIZE_OPTIONS 夹取')
+t('分页切片用 pageSize 变量（不再写死数字）',
+  /sorted\.slice\(safePage \* pageSize, safePage \* pageSize \+ pageSize\)/.test(settings),
+  '切片应使用 pageSize')
 t('硬截断常量没有被加回来', !/^\s*const CHIP_LIMIT\s*=/m.test(settings))
 
 console.log(`\n${pass}/${pass + fail} passed`)

@@ -107,8 +107,20 @@ export const DEFAULT_APPEARANCE = {
   viewportMarginPx: 8,
   showTags: true,
   tagOrder: ['cet4', 'cet6', 'ky', 'ielts'],
+  pageSize: 20,
   ...DEFAULT_MARK,
 }
+
+/**
+ * 生词本词表每页行数的三档。
+ *
+ * 这是**枚举**不是区间：用户要的就是 10/15/20 三选一，
+ * 所以不能像其它数值项那样用 min/max 夹取（那会把 50 夹成 20，
+ * 看起来结果对了，但语义是「超出上限」而不是「不在三档里，回落默认」）。
+ *
+ * @type {ReadonlyArray<number>}
+ */
+export const PAGE_SIZE_OPTIONS = Object.freeze([10, 15, 20])
 
 /**
  * 合并后的默认值。app.js 用它对 Config 与 localStorage 做兜底。
@@ -308,6 +320,8 @@ export function clampAppearance(input) {
     markColor: normalizeMarkColor(source.markColor),
     markKnown: typeof source.markKnown === 'boolean' ? source.markKnown : DEFAULT_APPEARANCE.markKnown,
     markStyle: MARK_STYLES.includes(source.markStyle) ? source.markStyle : DEFAULT_APPEARANCE.markStyle,
+    // 三档枚举：不在 [10,15,20] 里的一律回落 20（旧存档没有这个键也走这条）
+    pageSize: PAGE_SIZE_OPTIONS.includes(source.pageSize) ? source.pageSize : DEFAULT_APPEARANCE.pageSize,
   }
 
   if (Array.isArray(source.tagOrder)) {

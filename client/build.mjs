@@ -45,6 +45,8 @@ const MODULES = [
   'hit.js',
   'selection.js',
   'net.js',
+  // t2s 必须在 dict.js 之前：dict.js 要 import 它（例句繁转简）
+  't2s.js',
   'dict.js',
   'family.js',
   'srs.js',

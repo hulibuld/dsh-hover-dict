@@ -13,6 +13,10 @@
 
 import { fetchAsset } from './net.js'
 import { normalizeKey, stemCandidates } from './word.js'
+// 例句中文在数据里是繁中（Tatoeba 源如此），用户要简体。
+// 在 describeEntry 这一处把 zh 过一遍，卡片/复习卡/导出全部跟着变简体 ——
+// 一处接好，不必在 card.js 与 review.js 里各写一遍（那样迟早会漏一处）。
+import { toSimplified, needsConversion } from './t2s.js'
 
 /**
  * 词性 → 中文标签。数据里存的是 ECDICT 原文（带点），渲染时换成这个。
@@ -232,7 +236,13 @@ export function describeEntry(entry) {
     else if (Array.isArray(slot)) {
       examples = slot
         .filter((pair) => Array.isArray(pair) && typeof pair[0] === 'string')
-        .map((pair) => ({ en: pair[0], zh: typeof pair[1] === 'string' ? pair[1] : '' }))
+        .map((pair) => {
+          const zh = typeof pair[1] === 'string' ? pair[1] : ''
+          // 繁体转简体。describeEntry 是热路径（每次开卡片一次），
+          // 所以先用 needsConversion 粗筛：8960 条例句里只有 3145 条含繁体，
+          // 简体句与纯英文句直接跳过，不进两遍最长匹配。
+          return { en: pair[0], zh: needsConversion(zh) ? toSimplified(zh) : zh }
+        })
     }
   }
 

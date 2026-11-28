@@ -13,7 +13,7 @@
  */
 
 import {
-  loadUx, saveUx, DEFAULT_MARK_COLOR, MARK_COLOR_PRESETS,
+  loadUx, saveUx, DEFAULT_APPEARANCE, DEFAULT_MARK_COLOR, MARK_COLOR_PRESETS, PAGE_SIZE_OPTIONS,
 } from './config.js'
 // 预览必须与实际渲染用同一个颜色解析：theme-error 哨兵 → var(--dsw-alias-state-error-primary,…)。
 // 自己另写一套（比如把哨兵当 hex 塞进 color-mix）会让预览与正文对不上。
@@ -34,13 +34,11 @@ import { briefOf, describeEntry } from './dict.js'
 import { normalizeKey } from './word.js'
 
 /**
- * 生词本表格每页行数（设计 §B1：50 行一页）。
- *
- * v1 这里是个 chips 墙，用 CHIP_LIMIT=120 硬截断，超出的只留一句「还有 N 个」。
- * v2 改成真分页：全部词都能翻到，所以 CHIP_LIMIT 这个常量已经删掉了 ——
- * 现在「上限有交代」由下面的 PAGE_SIZE 与 PREVIEW_ROW_LIMIT 承担。
+ * 生词本每页行数：1.3.1 之前是写死的常量（v1 甚至用 CHIP_LIMIT=120 硬截断），
+ * 1.3.2 起改成用户可调的三档 —— 值走 ux.appearance.pageSize，
+ * 档位定义在 config.js 的 PAGE_SIZE_OPTIONS。这里不再留定值常量：
+ * 留一个「已废弃但仍导出」的副本只会让人以为它还有效。
  */
-const PAGE_SIZE = 50
 
 /**
  * 导入预览表最多渲染多少行。
@@ -213,17 +211,20 @@ const CSS = `
 .hds-btn:disabled::after { content: none; }
 
 .hds-btn-primary {
-  background: linear-gradient(180deg,
-    color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 88%, #fff),
-    var(--dsw-alias-brand-primary, #4d6bfe));
-  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 82%, #000);
-  color: var(--dsw-alias-label-primary, #fff);
+  /* 反色块：底色取 label-primary（亮色近黑 #0f1115、深色近白 #f9fafb），
+     字取 bg-base（亮色白、深色 #151517）。两套主题都自动是「深底白字 / 浅底深字」。
+     不用 brand-primary 当底 —— 宿主深色下它本身就是近白（#f9fafb），
+     配写死白字就是白底白字（1.3.1 实测 1.05），配 label-primary 字也还是近白对近白。
+     底色不做渐变：渐变会把某一档往背景基色方向拉，深色下正好把浅底拉浅、
+     字反而不够黑；纯 token 平涂，亮暗都稳在 18.90。 */
+  background: var(--dsw-alias-label-primary, #0f1115);
+  border-color: color-mix(in srgb, var(--dsw-alias-label-primary, #0f1115) 82%, #000);
+  color: var(--dsw-alias-bg-base, #fff);
   box-shadow: inset 0 1px 0 rgb(255 255 255 / 22%), inset 0 -10px 18px -12px rgb(0 0 0 / 24%);
 }
 .hds-btn-primary:hover:not(:disabled) {
-  background: linear-gradient(180deg,
-    var(--dsw-alias-brand-primary, #4d6bfe),
-    color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 88%, #000));
+  /* 悬停往背景基色方向退一点：亮色略变浅、深色略变深，两边都还有 12+ 的对比。 */
+  background: color-mix(in srgb, var(--dsw-alias-label-primary, #0f1115) 88%, var(--dsw-alias-bg-base, #ffffff));
 }
 .hds-btn-ghost {
   background: transparent; border-color: transparent; box-shadow: none;
@@ -307,11 +308,13 @@ const CSS = `
 }
 .hds-switch:active .hds-switch-track::after { width: 18px; }
 .hds-switch[aria-checked="true"] .hds-switch-track {
-  background: var(--dsw-alias-brand-primary, #4d6bfe);
-  border-color: color-mix(in srgb, var(--dsw-alias-brand-primary, #4d6bfe) 85%, #000);
+  /* 反色块，与 .hds-btn-primary 同一套：亮色深轨道+白滑块，深色浅轨道+深滑块。
+     用 brand-primary 当轨道会踩同一个坑（深色下近白），滑块 = 白 → 实测 1.00 隐形。 */
+  background: var(--dsw-alias-label-primary, #0f1115);
+  border-color: color-mix(in srgb, var(--dsw-alias-label-primary, #0f1115) 85%, #000);
 }
 .hds-switch[aria-checked="true"] .hds-switch-track::after {
-  transform: translateX(17px); background: var(--dsw-alias-label-primary, #fff);
+  transform: translateX(17px); background: var(--dsw-alias-bg-base, #fff);
 }
 .hds-switch[aria-checked="true"]:active .hds-switch-track::after { transform: translateX(14px); }
 .hds-switch:focus-visible .hds-switch-track {
@@ -856,10 +859,14 @@ export function SettingsPanel(props) {
   ]
 
   const body = []
-  if (tab === 'book') body.push(bookTab({ h, P, book, dict, stats, say, bump, storage, bookVersion }))
+  // 五个页签一律走 h(Component) 组件调用，**不许**在这里直接调页签函数。
+  // 直接调用会把该页签的 useState/useEffect 记到 SettingsPanel 自己的 fiber 上，
+  // 于是 SettingsPanel 的 hooks 数随页签变化（book=14 / appearance=8 / 其余=4），
+  // 切页签时 React 18 抛「Rendered fewer hooks than expected」，无错误边界整棵设置页卸载 —— 一片空白。
+  if (tab === 'book') body.push(h(bookTab, { key: 'book', h, P, book, dict, stats, say, bump, storage, bookVersion, ux, patchAppearance }))
   else if (tab === 'review') body.push(h(ReviewTab, { key: 'review', h, P, book, dict, stats, say, bump }))
   else if (tab === 'import') body.push(h(ImportTab, { key: 'import', h, P, book, dict, say, bump }))
-  else if (tab === 'appearance') body.push(appearanceTab({ h, P, ux, patchAppearance, dictInfo: props?.dictInfo, packsDir, storage, section, field, setUx }))
+  else if (tab === 'appearance') body.push(h(appearanceTab, { key: 'appearance', h, P, ux, patchAppearance, dictInfo: props?.dictInfo, packsDir, storage, section, field, setUx }))
   else body.push(h(YoudaoTab, {
     key: 'youdao', h, P, book, say, onGoBook: () => { setTab('book'); setMessage(null) },
   }))
@@ -896,8 +903,19 @@ export function SettingsPanel(props) {
    ═══════════════════════════════════════════════════════════════════════ */
 
 export function bookTab(ctx) {
-  const { h, P, book, dict, stats, say, bump, storage } = ctx
-  const { Card, Button, Input, Select, Badge, Note, Stat, Chip, Checkbox, GAP, FS, C } = P
+  const { h, P, book, dict, stats, say, bump, storage, ux, patchAppearance } = ctx
+  const { Card, Button, Input, Select, Badge, Note, Stat, Chip, Checkbox, Segment, GAP, FS, C } = P
+
+  /**
+   * 每页行数。三档 10/15/20，默认 20，值来自 localStorage（界面偏好，不进宿主 Config）。
+   *
+   * 兜一层 clampAppearance：ux 可能来自旧存档（没有 pageSize 这个键），
+   * 或者被外部改坏。这里再夹一次，保证 pageSize 一定是三档之一 ——
+   * 否则 0 会让切片算出空页、NaN 会让 pageCount 变成 NaN。
+   */
+  const pageSize = PAGE_SIZE_OPTIONS.includes(ux?.appearance?.pageSize)
+    ? ux.appearance.pageSize
+    : DEFAULT_APPEARANCE.pageSize
 
   const [query, setQuery] = useState('')
   const [stateFilter, setStateFilter] = useState('all')
@@ -923,9 +941,9 @@ export function bookTab(ctx) {
     return matchQuery(entry, query.trim(), dict)
   })
   const sorted = sortEntries(filtered, sortMode)
-  const pageCount = Math.max(1, Math.ceil(sorted.length / PAGE_SIZE))
+  const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize))
   const safePage = Math.min(page, pageCount - 1)
-  const rows = sorted.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE)
+  const rows = sorted.slice(safePage * pageSize, safePage * pageSize + pageSize)
   const pageHeads = rows.map((row) => row.head)
   const allOnPageSelected = pageHeads.length > 0 && pageHeads.every((head) => selected.includes(head))
 
@@ -1139,18 +1157,40 @@ export function bookTab(ctx) {
           }).flat(),
         ]),
 
-      /* 分页 + 导出 */
-      sorted.length > PAGE_SIZE
-        ? h('div', { key: 'pager', className: 'hds-pager' }, [
-          h('span', { key: 'info' }, `第 ${safePage + 1}/${pageCount} 页 · 共 ${sorted.length} 个`),
-          h('span', { key: 'btns', style: { display: 'flex', gap: GAP.xs } }, [
+      /* 分页 + 导出。
+         注意：「每页 N 行」选择器**必须常驻**，不能跟翻页按钮一起被
+         `pageCount > 1` 藏掉 —— 否则用户词少时（或词表空时）根本找不到
+         调档的入口，得先加足够的词才能改。翻页按钮才按 pageCount 显示。 */
+      h('div', { key: 'pager', className: 'hds-pager' }, [
+        h('span', { key: 'info' },
+          pageCount > 1
+            ? `第 ${safePage + 1}/${pageCount} 页 · 共 ${sorted.length} 个`
+            : (sorted.length === 0 ? '没有词' : `共 ${sorted.length} 个词`)),
+        h('span', {
+          key: 'size',
+          style: { display: 'inline-flex', alignItems: 'center', gap: GAP.xs },
+        }, [
+          h('span', { key: 'l', style: { fontSize: FS.small, color: C.textDim } }, '每页'),
+          h(Segment, {
+            value: pageSize,
+            items: PAGE_SIZE_OPTIONS.map((n) => ({ id: n, label: String(n) })),
+            onChange: (next) => {
+              const value = Number(next)
+              if (!PAGE_SIZE_OPTIONS.includes(value)) return
+              // 换档回第一页：回第一页比夹取更符合直觉，也彻底避开越界
+              setPage(0)
+              if (typeof patchAppearance === 'function') patchAppearance('pageSize', value)
+            },
+            label: '每页行数',
+          }),
+        ]),
+        pageCount > 1
+          ? h('span', { key: 'btns', style: { display: 'flex', gap: GAP.xs } }, [
             h(Button, { key: 'prev', label: '上一页', size: 'sm', disabled: safePage <= 0, onClick: () => setPage(Math.max(0, safePage - 1)) }),
             h(Button, { key: 'next', label: '下一页', size: 'sm', disabled: safePage >= pageCount - 1, onClick: () => setPage(Math.min(pageCount - 1, safePage + 1)) }),
-          ]),
-        ])
-        : h('div', { key: 'pager1', className: 'hds-pager' }, [
-          h('span', { key: 'info' }, sorted.length === 0 ? '没有词' : `共 ${sorted.length} 个词`),
-        ]),
+          ])
+          : null,
+      ]),
 
       h('div', { key: 'exports', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
         h(Button, { key: 't', label: '导出 txt', size: 'sm', disabled: all.length === 0, onClick: () => onExport('txt') }),
@@ -1399,11 +1439,29 @@ export function ReviewTab(props) {
   /* ── 未开始 / 队列空 ── */
   if (queue === null || queue.length === 0) {
     const empty = queue !== null && queue.length === 0
+
+    // 空态文案分两种，不能一句「今天没有到期的词」糊过去：
+    //
+    // stats.dueToday 的口径是 `due < 今天结束`（今天之内会到期的都算），
+    // 而 dueQueue 的口径是 `due <= 此刻`。词 due 设在今天中午、现在还是早上时，
+    // 「今日到期 49」和「没有到期的词」会同时出现在一屏上，自相矛盾 ——
+    // 用户看到的就是「明明写着 49 个，却说到期的是 0 个、按钮点了也没反应」。
+    //
+    // 选的处理是**分开说**（不动 SRS 逻辑，不放宽 dueQueue）：
+    //   dueToday > 0 时，标题与 hint 都说「此刻」可复习的是 0，并交代今日到期的
+    //   那些还没到复习点；dueToday === 0 时才是真的「今天没有到期的词」。
+    // 放宽 dueQueue 到 todayEnd 会让还没到复习点的词提前出现，违背间隔本意，不选。
+    const dueLater = stats.dueToday > 0
+    const title = dueLater ? '此刻没有可复习的词' : '今天没有到期的词'
+    const hint = dueLater
+      ? `此刻可复习的是 0 个 —— 今日到期 ${stats.dueToday} 个还没到复习点，今天稍晚会陆续到期。可以先提前复习最早到期的词，或去导入新词。`
+      : '此刻可复习的是 0 个。可以提前复习最早到期的词，或去导入新词。'
+
     return h('div', { style: { display: 'flex', flexDirection: 'column', gap: GAP.md } }, [
       h(Card, {
         key: 'start',
-        title: empty ? '今天没有到期的词' : '开始复习',
-        hint: empty ? '队列是空的。可以提前复习最早到期的词，或去导入新词。' : `今日到期 ${stats.dueToday} 个。空格翻面，1/2/3 评分。`,
+        title: empty ? title : '开始复习',
+        hint: empty ? hint : `今日到期 ${stats.dueToday} 个。空格翻面，1/2/3 评分。`,
       }, [
         h('div', { key: 'stats', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
           h(Stat, { key: 'a', label: '今日到期', value: stats.dueToday, tone: 'accent' }),
@@ -2095,6 +2153,135 @@ export function youdaoMode(status, checking) {
   return status.valid === true ? 'ready' : 'stale'
 }
 
+/* ── 浏览器登录会话（点「登录有道」→ 宿主开可见窗口 → 自动取 Cookie） ── */
+
+/** 轮询间隔。宿主那边登录是一秒级的事，2 秒一次既跟得上也不吵。 */
+const YOUDAO_LOGIN_POLL_MS = 2000
+
+/**
+ * 登录会话 UI 的初始状态。
+ *
+ * 抽成纯函数是为了 smoke 能直接对着状态机验「pending→success」：
+ * 组件里的轮询要真发请求，测试不该依赖网络与 GUI。
+ *
+ * phase 取值：
+ *   idle     还没点（或已取消/已重置）
+ *   starting 已点，等 start 回话
+ *   waiting  窗口开着，等用户在里面登录
+ *   done     拿到了 Cookie 且宿主验证通过
+ *   failed   起不来（E_NO_BROWSER）、超时、被取消、会话没了
+ *
+ * degraded=true 是**能力**结论（这台机器没有 Chrome），不是一次失败：
+ * 界面上要把「登录有道」置灰并指向手动粘贴，而不是给个重试按钮让人反复点。
+ *
+ * @returns {{ phase: string, sessionId: string, message: string, degraded: boolean, nickname: string, polls: number, code: string }}
+ */
+export function youdaoLoginInitial() {
+  return { phase: 'idle', sessionId: '', message: '', degraded: false, nickname: '', polls: 0, code: '' }
+}
+
+/** 登录相关 E_ → 面板话术。E_NO_BROWSER 要明确指向手动粘贴。 */
+export function youdaoLoginErrorText(error) {
+  const code = String(error?.code ?? '')
+  const message = typeof error?.message === 'string' && error.message !== '' ? error.message : '登录没成功'
+  if (code === 'E_NO_BROWSER') {
+    return `自动登录不可用：${message}。用下面的「手动粘贴 Cookie」一样能连上，不用装任何东西。`
+  }
+  if (code === 'E_LOGIN_TIMEOUT') return '等了 10 分钟没等到登录完成，窗口已经关了。可以再点一次「登录有道」。'
+  if (code === 'E_LOGIN_CANCELLED') return '已取消登录。'
+  if (code === 'E_LOGIN_NOT_FOUND') return '这个登录会话已经失效了，再点一次「登录有道」就好。'
+  return message
+}
+
+/**
+ * 登录会话状态机（纯函数）。
+ *
+ * 事件：
+ *   {type:'start-request'}                    点了「登录有道」
+ *   {type:'start-reply', payload}             POST /youdao/login/start 的响应
+ *   {type:'poll', payload}                    GET  /youdao/login/poll 的响应
+ *   {type:'cancel'}                           点了取消
+ *   {type:'reset'}                            回到初始
+ *
+ * 为什么不把「停不停轮询」写在组件里：那是这条流程里最容易错的一处
+ * （少停一次就是无限打宿主；早停一次就是用户登录完了却永远显示等待中）。
+ * 收进纯函数，smoke 能把每条分支都点一遍。
+ *
+ * @param {ReturnType<typeof youdaoLoginInitial>} state
+ * @param {{ type: string, payload?: any }} event
+ * @returns {ReturnType<typeof youdaoLoginInitial>}
+ */
+export function youdaoLoginReduce(state, event) {
+  const base = state ?? youdaoLoginInitial()
+  const type = event?.type
+
+  if (type === 'reset') return youdaoLoginInitial()
+
+  if (type === 'start-request') {
+    // 保留 degraded：这台机器没有 Chrome 这件事不会因为再点一次就变
+    return { ...youdaoLoginInitial(), degraded: base.degraded, phase: 'starting' }
+  }
+
+  if (type === 'start-reply') {
+    const payload = event.payload
+    const sessionId = typeof payload?.sessionId === 'string' ? payload.sessionId : ''
+    if (payload?.ok === true && sessionId !== '') {
+      return { ...base, phase: 'waiting', sessionId, message: '', polls: 0, code: '' }
+    }
+    const code = String(payload?.error?.code ?? 'E_LOGIN_FAILED')
+    return {
+      ...base,
+      phase: 'failed',
+      sessionId: '',
+      code,
+      degraded: code === 'E_NO_BROWSER',
+      message: youdaoLoginErrorText(payload?.error),
+    }
+  }
+
+  if (type === 'cancel') {
+    return { ...youdaoLoginInitial(), degraded: base.degraded, phase: 'idle', message: '已取消登录。' }
+  }
+
+  if (type === 'poll') {
+    const payload = event.payload
+    if (payload?.ok === true) {
+      // success 说明宿主已经取到 Cookie、验证过、落盘了
+      if (payload.status === 'success') {
+        return {
+          ...base,
+          phase: 'done',
+          sessionId: '',
+          message: '',
+          code: '',
+          nickname: typeof payload.nickname === 'string' ? payload.nickname : '',
+        }
+      }
+      // pending 及一切「还没完」的答复都继续等
+      return { ...base, phase: 'waiting', polls: base.polls + 1 }
+    }
+    const code = String(payload?.error?.code ?? 'E_LOGIN_FAILED')
+    // 网络抖一下不该判会话死掉：宿主那边窗口还开着，用户可能正在输密码
+    if (code === 'E_NETWORK' || code === 'E_YOUDAO_TIMEOUT' || code === 'E_BAD_JSON') {
+      return { ...base, phase: 'waiting', polls: base.polls + 1, message: youdaoLoginErrorText(payload?.error) }
+    }
+    return {
+      ...base,
+      phase: 'failed',
+      sessionId: '',
+      code,
+      message: youdaoLoginErrorText(payload?.error),
+    }
+  }
+
+  return base
+}
+
+/** 当前状态还要不要继续轮询。 */
+export function youdaoLoginShouldPoll(state) {
+  return state?.phase === 'waiting' && typeof state.sessionId === 'string' && state.sessionId !== ''
+}
+
 /**
  * 一键抓取完成后的结果条文案（设计 §D3）。
  *
@@ -2149,6 +2336,20 @@ export function YoudaoTab(props) {
   })
   const [targetBook, setTargetBook] = useState('default')
   const [manualOpen, setManualOpen] = useState(false)
+  // 手动粘贴区的展开状态。自动登录是主路径，所以默认收起。
+  const [manualPasteOpen, setManualPasteOpen] = useState(false)
+  // 登录会话状态（点「登录有道」→ 宿主开可见窗口 → 自动取 Cookie）
+  const [login, setLogin] = useState(() => youdaoLoginInitial())
+  // 轮询定时器。用 ref 而不是 state：它不该触发重渲染，也不是渲染结果的一部分
+  const loginTimer = useRef(null)
+  // 卸载标记。光在 cleanup 里 clearTimeout 不够：如果卸载那一刻正好有一个
+  // poll 请求在飞，它的 .then 回来后还会排一个新的定时器，于是留下一个
+  // 没人停的轮询一直打宿主。所以排定时器前必须看这个标记。
+  const aliveRef = useRef(true)
+  // 登录状态的同源副本。poll 回调要读「最新」而不是「本轮渲染时的」状态，
+  // 而 setLogin 的更新函数必须是纯的（React 可能重复调用），不能在里面排定时器。
+  const loginRef = useRef(login)
+  loginRef.current = login
 
   const refreshStatus = () => {
     setChecking(true)
@@ -2173,6 +2374,83 @@ export function YoudaoTab(props) {
   useEffect(() => {
     try { if (typeof book?.listBooks === 'function') setBooks(book.listBooks()) } catch { /* ignore */ }
   }, [book])
+
+  /** 停掉轮询。所有「不用再等了」的路径都必须走它，别留一个还在打的定时器。 */
+  const stopPolling = () => {
+    if (loginTimer.current !== null) {
+      clearTimeout(loginTimer.current)
+      loginTimer.current = null
+    }
+  }
+
+  // 卸载时把定时器收干净 —— 用户切走页签时不能留一个还在打宿主的计时器
+  useEffect(() => () => {
+    aliveRef.current = false
+    stopPolling()
+  }, [])
+
+  /**
+   * 轮一次，并在需要时自己排下一次。
+   *
+   * 注意：状态更新函数必须是纯的（React 可能重复调用它），所以「要不要继续轮询」
+   * 的判断放在**更新函数外面**，只看刚拿到的 payload 与当前 phase。
+   */
+  const pollOnce = (sessionId) => {
+    youdaoRequest('GET', `/login/poll?session=${encodeURIComponent(sessionId)}`).then((payload) => {
+      const next = youdaoLoginReduce(loginRef.current, { type: 'poll', payload })
+      loginRef.current = next
+      setLogin(next)
+      if (youdaoLoginShouldPoll(next) && aliveRef.current) {
+        loginTimer.current = setTimeout(() => pollOnce(next.sessionId), YOUDAO_LOGIN_POLL_MS)
+      } else {
+        stopPolling()
+        // 成功要走一遍 status：状态卡上的昵称/词数都来自 /status
+        if (next.phase === 'done') refreshStatus()
+      }
+    }).catch(() => {
+      // 网络异常在 reduce 里已折成「继续等」，这里只负责排下一次
+      if (youdaoLoginShouldPoll(loginRef.current) && aliveRef.current) {
+        loginTimer.current = setTimeout(() => pollOnce(loginRef.current.sessionId), YOUDAO_LOGIN_POLL_MS)
+      }
+    })
+  }
+
+  /** 点「登录有道」：让宿主起可见窗口，然后开始轮询。 */
+  const onLogin = () => {
+    stopPolling()
+    const starting = youdaoLoginReduce(loginRef.current, { type: 'start-request' })
+    loginRef.current = starting
+    setLogin(starting)
+    setFailure(null)
+    youdaoRequest('POST', '/login/start').then((payload) => {
+      const next = youdaoLoginReduce(starting, { type: 'start-reply', payload })
+      loginRef.current = next
+      setLogin(next)
+      if (youdaoLoginShouldPoll(next) && aliveRef.current) {
+        loginTimer.current = setTimeout(() => pollOnce(next.sessionId), YOUDAO_LOGIN_POLL_MS)
+      }
+    }).catch(() => {
+      const next = youdaoLoginReduce(starting, {
+        type: 'start-reply',
+        payload: { ok: false, error: { code: 'E_NETWORK', message: '连不上宿主，请确认插件已启用' } },
+      })
+      loginRef.current = next
+      setLogin(next)
+    })
+  }
+
+  /** 取消：先关宿主那个窗口，再清本地状态。 */
+  const onLoginCancel = () => {
+    const sessionId = loginRef.current.sessionId
+    stopPolling()
+    const next = youdaoLoginReduce(loginRef.current, { type: 'cancel' })
+    loginRef.current = next
+    setLogin(next)
+    if (sessionId !== '') {
+      // 不关心结果：窗口关不掉也就是个残留窗口，不该卡住界面
+      void youdaoRequest('POST', '/login/cancel', { sessionId })
+    }
+  }
 
   const hasCookie = status?.hasCookie === true
   const mode = youdaoMode(status, checking)
@@ -2245,6 +2523,67 @@ export function YoudaoTab(props) {
     }).catch(() => setSyncing(false))
   }
 
+  // ── 登录区：点「登录有道」→ 宿主开可见窗口 → 自动取 Cookie ──
+  const loginBlock = (() => {
+    // 已连上就不必再显示登录入口（状态卡已经说明「已连接」）
+    if (mode === 'ready' || mode === 'checking') return null
+    if (login.degraded && login.phase !== 'waiting' && login.phase !== 'starting') {
+      // 这台机器没有可用浏览器：不给人一个点了也没用的按钮
+      return h(Note, {
+        key: 'login-degraded',
+        tone: 'warn',
+        text: login.message || youdaoLoginErrorText({ code: 'E_NO_BROWSER', message: '这台机器上没找到 Chrome' }),
+      })
+    }
+    if (login.phase === 'waiting') {
+      return h('div', {
+        key: 'login-waiting',
+        style: { display: 'flex', flexDirection: 'column', gap: GAP.sm },
+      }, [
+        h('div', { key: 't', className: 'hds-status-card', 'data-tone': 'ok' }, [
+          h('div', { key: 'm', className: 'hds-status-main' }, [
+            h('div', { key: 'h', className: 'hds-status-title' }, '正在等你在浏览器里登录…'),
+            h('div', { key: 'd', className: 'hds-status-meta' },
+              '已经帮你打开一个有道的登录窗口，在那个窗口里登录就行。登录完成后这里会自动连上，不用回来点任何东西。'),
+          ]),
+        ]),
+        h('div', { key: 'b', style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' } }, [
+          h(Button, { key: 'c', label: '取消登录', variant: 'default', size: 'sm', onClick: onLoginCancel }),
+          login.message !== ''
+            ? h('span', { key: 'n', style: { fontSize: FS.small, color: C.textFaint, alignSelf: 'center' } }, login.message)
+            : null,
+        ]),
+      ])
+    }
+    if (login.phase === 'starting') {
+      return h('div', {
+        key: 'login-starting',
+        style: { display: 'flex', alignItems: 'center', gap: GAP.sm },
+      }, [
+        h(Button, { key: 'b', label: '正在打开登录窗口…', variant: 'primary', busy: true }),
+      ])
+    }
+    // idle / failed / done 都回到这个主按钮
+    return h('div', {
+      key: 'login-idle',
+      style: { display: 'flex', flexDirection: 'column', gap: GAP.xs + 2 },
+    }, [
+      h('div', { key: 'row', style: { display: 'flex', gap: GAP.sm, alignItems: 'center', flexWrap: 'wrap' } }, [
+        h(Button, {
+          key: 'go',
+          label: login.phase === 'failed' ? '重试登录有道' : '登录有道',
+          variant: 'primary',
+          onClick: onLogin,
+        }),
+        h('span', { key: 'hint', style: { fontSize: FS.small, color: C.textFaint } },
+          '点一下会打开一个有道的登录窗口，登录完自动连上，不用复制 Cookie。'),
+      ]),
+      login.phase === 'failed' && login.message !== ''
+        ? h(Note, { key: 'err', tone: 'err', text: login.message })
+        : null,
+    ])
+  })()
+
   // ── 状态卡 ──
   const statusCard = (() => {
     if (mode === 'checking') {
@@ -2270,7 +2609,7 @@ export function YoudaoTab(props) {
         h('div', { key: 'm', className: 'hds-status-main' }, [
           h('div', { key: 't', className: 'hds-status-title' }, 'Cookie 已失效'),
           h('div', { key: 'd', className: 'hds-status-meta' },
-            '有道那边不认这段登录态了。重新走一遍下面四步，把新的 Cookie 粘进来。'),
+            '有道那边不认这段登录态了。点下面的「登录有道」重新连一次最省事。'),
         ]),
         h(Badge, { key: 'b', text: '失效', tone: 'danger' }),
       ])
@@ -2279,14 +2618,31 @@ export function YoudaoTab(props) {
       h('div', { key: 'm', className: 'hds-status-main' }, [
         h('div', { key: 't', className: 'hds-status-title' }, '还没连接有道'),
         h('div', { key: 'd', className: 'hds-status-meta' },
-          '按下面四步复制一次 Cookie 就行，不用在这里输账号密码。'),
+          '点「登录有道」会自动打开一个有道的登录窗口，登录完就自动连上了。'),
       ]),
       h(Badge, { key: 'b', text: '未配置', tone: 'neutral' }),
     ])
   })()
 
-  // ── 四步引导（未配置 / 失效时都显示，失效的人也需要照着重做） ──
-  const steps = (mode === 'empty' || mode === 'stale') ? h('ol', {
+  // ── 手动粘贴 Cookie（兜底）：默认折叠，自动登录不可用它才是主路径 ──
+  // 自动登录走不通（没装 Chrome、起不来、或者用户就是习惯手动）时才展开。
+  // 降级态（degraded）默认展开 —— 那时它是唯一能用的一条路，别让人再点一次「看手动方法」。
+  const manualSectionOpen = manualPasteOpen || login.degraded
+  const manualToggle = (mode === 'empty' || mode === 'stale' || hasCookie) ? h('div', {
+    key: 'manual-toggle',
+    style: { display: 'flex', alignItems: 'center', gap: GAP.sm, flexWrap: 'wrap' },
+  }, [
+    h(Button, {
+      key: 't',
+      label: manualSectionOpen ? '收起手动粘贴 Cookie' : '手动粘贴 Cookie（备选方式）',
+      variant: 'ghost',
+      size: 'sm',
+      onClick: () => setManualPasteOpen(!manualSectionOpen),
+    }),
+  ]) : null
+
+  // ── 四步引导（只在手动区展开、且未连接/失效时显示） ──
+  const steps = manualSectionOpen && !hasCookie ? h('ol', {
     key: 'steps', className: 'hds-steps',
   }, YOUDAO_STEPS.map((step, index) => h('li', { key: String(index), className: 'hds-step' }, [
     h('span', { key: 'n', className: 'hds-step-no', 'aria-hidden': 'true' }, String(index + 1)),
@@ -2296,7 +2652,14 @@ export function YoudaoTab(props) {
     ]),
   ]))) : null
 
-  const cookieField = (mode === 'empty' || mode === 'stale') ? h(Field, {
+  // 失效时即便用户收起手动区，也得看到「要重新弄一次」的红条
+  const staleHint = (mode === 'stale') ? h(Note, {
+    key: 'stale-note',
+    tone: 'err',
+    text: 'Cookie 失效了。重新点一次「登录有道」最省事；也可以展开下面的手动区，复制一段新的贴进去。',
+  }) : null
+
+  const cookieField = manualSectionOpen && (mode === 'empty' || mode === 'stale' || hasCookie) ? h(Field, {
     key: 'cookie',
     label: 'Cookie',
     hint: '粘贴后输入框内容会被隐藏。保存成功后自动清空，不会留在这台机器以外的地方。',
@@ -2321,12 +2684,15 @@ export function YoudaoTab(props) {
         ? h(Button, { key: 'clear', label: '清除', variant: 'danger', size: 'sm', onClick: onClear })
         : null,
     ]),
-  ]) : h('div', {
+  ]) : null
+
+  // 「清除 Cookie」单独一块：已连接时手动区是折叠的，清除入口得留在外面
+  const clearBlock = hasCookie && !manualSectionOpen ? h('div', {
     key: 'connected',
     style: { display: 'flex', gap: GAP.sm, flexWrap: 'wrap' },
   }, [
     h(Button, { key: 'clear2', label: '清除 Cookie', variant: 'danger', size: 'sm', onClick: onClear }),
-  ])
+  ]) : null
 
   // ── 抓取区 ──
   const syncBlock = (mode === 'ready') ? h('div', {
@@ -2403,18 +2769,27 @@ export function YoudaoTab(props) {
   return h(Card, {
     key: 'youdao',
     title: '有道同步',
-    hint: '把有道词典收藏夹里的词一次性抓进生词本。只需复制一次 Cookie，不在这里输账号密码。',
+    hint: '把有道词典收藏夹里的词一次性抓进生词本。点「登录有道」会自动连上，不用自己复制 Cookie。',
   }, [
     statusCard,
-    (mode === 'stale') ? h(Note, {
-      key: 'stale',
-      tone: 'err',
-      text: 'Cookie 失效了。照着下面四步重新复制一次，旧的会被覆盖。',
-    }) : null,
+    // 未连接 / 失效时才给登录入口。已连接就直接显示同步区。
+    loginBlock,
+    staleHint,
     failureBlock,
+    syncBlock,
+    login.phase === 'done'
+      ? h(Note, {
+        key: 'login-ok',
+        tone: 'ok',
+        text: login.nickname !== ''
+          ? `已通过浏览器登录连上有道（${login.nickname}）。`
+          : '已通过浏览器登录连上有道。',
+      })
+      : null,
+    clearBlock,
+    manualToggle,
     steps,
     cookieField,
-    syncBlock,
     fallbackBlock,
     !showFallback
       ? h('div', { key: 'manual', style: { display: 'flex', alignItems: 'center', gap: GAP.sm } }, [
